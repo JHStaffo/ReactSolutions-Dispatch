@@ -1,0 +1,19 @@
+{
+  "name": "reactsolutions-dispatch",
+  "version": "0.1.0",
+  "private": true,
+  "main": "app.js",
+  "engines": {
+    "node": ">=18.18"
+  },
+  "scripts": {
+    "start": "node app.js",
+    "genkey": "node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\""
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "leaflet": "^1.9.4",
+    "ws": "^8.18.0",
+    "zod": "^3.24.1"
+  }
+}

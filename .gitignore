@@ -1,0 +1,8 @@
+# Created on the server; never committed to the release branch
+node_modules/
+tmp/
+public/
+data/
+.env
+*.log
+.htaccess
