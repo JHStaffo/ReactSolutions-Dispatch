@@ -32,6 +32,9 @@ import {
 import { config } from './config';
 import { hashPassword, verifyPassword } from './crypto';
 import { seedState } from './seed';
+import { milesSince, positions } from './gps';
+import { actor, bad, who } from './http';
+import { resolvePatient } from './patients';
 import { forRole, store, summarize } from './store';
 
 export const api = express.Router();
@@ -71,6 +74,7 @@ const callFields = z.object({
 
 const createSchema = callFields
   .extend({
+    patientId: z.string().uuid().nullable().default(null),
     returnTrip: z
       .object({ mode: z.enum(['SCHEDULED', 'WILL_CALL']), pickupTime: isoDate.nullable().default(null) })
       .nullable()
@@ -88,23 +92,11 @@ const createSchema = callFields
       ctx.addIssue({ code: 'custom', path: ['recurrence'], message: 'Recurring trips need a scheduled pickup time' });
   });
 
-const updateSchema = callFields.partial().extend({ expectedVersion: z.number().int() });
+const updateSchema = callFields.partial().extend({
+  expectedVersion: z.number().int(),
+  loadedMiles: z.number().min(0).max(2000).nullable().optional(),
+});
 const versionOnly = z.object({ expectedVersion: z.number().int() });
-
-function bad(res: Response, err: z.ZodError) {
-  return res.status(400).json({
-    error: 'VALIDATION',
-    issues: err.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
-  });
-}
-
-function actor(req: Request) {
-  return req.user!.displayName;
-}
-
-function who(req: Request) {
-  return { user: req.user!.username, role: req.user!.role, ip: req.ip };
-}
 
 /** Optimistic concurrency: the client must say which version it was looking at. */
 function versionConflict(req: Request, res: Response, call: Call, expected: number, action: string) {
@@ -118,13 +110,13 @@ function versionConflict(req: Request, res: Response, call: Call, expected: numb
   return true;
 }
 
-function commit(req: Request, call: Call, action: string, detail?: string) {
+export function commit(req: Request, call: Call, action: string, detail?: string, prevCrewId?: string | null) {
   call.version++;
   call.updatedAt = new Date().toISOString();
   call.updatedBy = actor(req);
   call.history.push({ ts: call.updatedAt, actor: actor(req), action, detail });
   store.save();
-  store.emit({ type: 'call', action, actor: actor(req), call: summarize(call) });
+  store.emit({ type: 'call', action, actor: actor(req), call: summarize(call), prevCrewId });
 }
 
 function setStatus(call: Call, status: CallStatus) {
@@ -182,6 +174,8 @@ function newCall(req: Request, f: z.infer<typeof callFields>, extra: Partial<Cal
     linkedCallId: null,
     leg: 'ONE_WAY',
     seriesId: null,
+    patientId: null,
+    loadedMiles: null,
     history: [{ ts: now, actor: actor(req), action: 'Created' }],
     createdAt: now,
     createdBy: actor(req),
@@ -208,7 +202,7 @@ api.post('/auth/login', (req, res) => {
     audit({ user: username, role: '-', action: 'LOGIN', outcome: 'failure', ip: req.ip });
     return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Incorrect username or password.' });
   }
-  const user = { username: u.username, displayName: u.displayName, role: u.role };
+  const user = { username: u.username, displayName: u.displayName, role: u.role, crewId: u.crewId ?? null };
   const token = createSession(user);
   setSessionCookie(res, token);
   audit({ user: u.username, role: u.role, action: 'LOGIN', outcome: 'success', ip: req.ip });
@@ -255,7 +249,7 @@ api.post('/auth/change-password', requireAuth(), (req, res) => {
 // ---------- Board ----------
 
 /** Board data for a time window: everything still queued plus calls scheduled in [from, to). */
-api.post('/board', requireAuth(), (req, res) => {
+api.post('/board', requireAuth(), requireRole('dispatcher', 'supervisor', 'viewer'), (req, res) => {
   const p = z.object({ from: isoDate, to: isoDate }).safeParse(req.body);
   if (!p.success) return bad(res, p.error);
   const from = Date.parse(p.data.from);
@@ -271,19 +265,26 @@ api.post('/board', requireAuth(), (req, res) => {
     seq: store.seq,
     crews: store.state.crews,
     facilities: store.state.facilities,
+    gps: positions(),
+    gpsStaleMinutes: config.gps.staleMinutes,
+    map: { tileUrl: config.map.tileUrl, attribution: config.map.attribution, center: config.gps.center, zoom: 12 },
     calls: calls.map((c) => forRole(summarize(c), req.user!.role)),
   });
 });
 
 /** Polling fallback for networks/hosts where WebSockets are blocked. Not counted as activity. */
-api.get('/changes', requireAuth(false), (req, res) => {
+api.get('/changes', requireAuth(false), requireRole('dispatcher', 'supervisor', 'viewer'), (req, res) => {
   const since = Number(req.query.since);
   const boot = String(req.query.boot || '');
   if (boot !== store.bootId || !Number.isFinite(since)) return res.json({ reset: true });
   const events = store.eventsSince(since);
   if (!events) return res.json({ reset: true });
   const role = req.user!.role;
-  res.json({ seq: store.seq, events: events.map((e) => (e.type === 'call' ? { ...e, call: forRole(e.call, role) } : e)) });
+  res.json({
+    seq: store.seq,
+    events: events.map((e) => (e.type === 'call' ? { ...e, call: forRole(e.call, role) } : e)),
+    gps: positions(),
+  });
 });
 
 // ---------- Calls ----------
@@ -291,7 +292,9 @@ api.get('/changes', requireAuth(false), (req, res) => {
 api.post('/calls', requireAuth(), requireRole('dispatcher', 'supervisor'), (req, res) => {
   const p = createSchema.safeParse(req.body);
   if (!p.success) return bad(res, p.error);
-  const { returnTrip, recurrence, ...fields } = p.data;
+  const { returnTrip, recurrence, patientId: wantedPatient, ...fields } = p.data;
+  const patient = resolvePatient(req, wantedPatient, fields);
+  if (!patient) return res.status(404).json({ error: 'NOT_FOUND', message: 'Patient record not found.' });
 
   // Dates for the trip(s): the first one, plus recurrences (same time of day).
   const dates: (Date | null)[] = [fields.pickupTime ? new Date(fields.pickupTime) : null];
@@ -307,7 +310,7 @@ api.post('/calls', requireAuth(), requireRole('dispatcher', 'supervisor'), (req,
   const created: Call[] = [];
   for (const d of dates) {
     const shift = d && fields.pickupTime ? d.getTime() - Date.parse(fields.pickupTime) : 0;
-    const out = newCall(req, { ...fields, pickupTime: d ? d.toISOString() : null }, { seriesId });
+    const out = newCall(req, { ...fields, pickupTime: d ? d.toISOString() : null }, { seriesId, patientId: patient.id });
     created.push(out);
     if (returnTrip) {
       const ret = newCall(
@@ -319,7 +322,7 @@ api.post('/calls', requireAuth(), requireRole('dispatcher', 'supervisor'), (req,
           pickupMode: returnTrip.mode,
           pickupTime: returnTrip.mode === 'SCHEDULED' && returnTrip.pickupTime ? new Date(Date.parse(returnTrip.pickupTime) + shift).toISOString() : null,
         },
-        { seriesId, leg: 'RETURN', linkedCallId: out.id },
+        { seriesId, leg: 'RETURN', linkedCallId: out.id, patientId: patient.id },
       );
       out.leg = 'OUTBOUND';
       out.linkedCallId = ret.id;
@@ -332,7 +335,7 @@ api.post('/calls', requireAuth(), requireRole('dispatcher', 'supervisor'), (req,
     audit({ ...who(req), action: 'CALL_CREATE', entityType: 'call', entityId: c.id, callNumber: c.callNumber, outcome: 'success', detail: c.seriesId ? 'recurring' : undefined });
   }
   store.save();
-  res.status(201).json({ calls: created.map(summarize) });
+  res.status(201).json({ calls: created.map(summarize), patientId: patient.id });
 });
 
 /** Full record including PHI. Every access is audited. */
@@ -376,7 +379,7 @@ api.patch('/calls/:id', requireAuth(), requireRole('dispatcher', 'supervisor'), 
   if (c.pickupMode !== 'SCHEDULED') c.pickupTime = null;
   commit(req, c, 'Edited', fields.length ? `fields: ${fields.join(', ')}` : undefined);
   audit({ ...who(req), action: 'CALL_UPDATE', entityType: 'call', entityId: c.id, callNumber: c.callNumber, outcome: 'success', detail: `fields=${fields.join(',')}` });
-  res.json({ call: c });
+  res.json({ call: c, summary: summarize(c) });
 });
 
 api.post('/calls/:id/assign', requireAuth(), requireRole('dispatcher', 'supervisor'), (req, res) => {
@@ -394,12 +397,13 @@ api.post('/calls/:id/assign', requireAuth(), requireRole('dispatcher', 'supervis
   const warnings = assignWarnings(c, crew, start).filter((w) => !p.data.acknowledge.includes(w.code));
   if (warnings.length) return res.status(422).json({ error: 'NEEDS_ACK', warnings });
   const moved = c.crewId && c.crewId !== crew.id;
+  const prevCrewId = c.crewId;
   const prev = c.crewId ? store.crew(c.crewId)?.unit : null;
   c.crewId = crew.id;
   c.scheduledStart = start.toISOString();
   if (c.status === 'QUEUED') setStatus(c, 'ASSIGNED');
   const acks = p.data.acknowledge.length ? ` (acknowledged: ${p.data.acknowledge.join(', ')})` : '';
-  commit(req, c, moved ? 'Reassigned' : 'Assigned', `${moved ? `${prev} -> ` : ''}${crew.unit} at ${start.toISOString()}${acks}`);
+  commit(req, c, moved ? 'Reassigned' : 'Assigned', `${moved ? `${prev} -> ` : ''}${crew.unit} at ${start.toISOString()}${acks}`, prevCrewId);
   audit({ ...who(req), action: 'CALL_ASSIGN', entityType: 'call', entityId: c.id, callNumber: c.callNumber, outcome: 'success', detail: `crew=${crew.unit}${acks}` });
   res.json({ call: summarize(c) });
 });
@@ -413,15 +417,16 @@ api.post('/calls/:id/unassign', requireAuth(), requireRole('dispatcher', 'superv
   if (ACTIVE_STATUSES.includes(c.status) || c.status === 'COMPLETED')
     return res.status(400).json({ error: 'INVALID_STATE', message: `Call ${c.callNumber} is already ${STATUSES[c.status].toLowerCase()}; it can't go back to the queue.` });
   const prev = c.crewId ? store.crew(c.crewId)?.unit : '';
+  const prevCrewId = c.crewId;
   c.crewId = null;
   c.scheduledStart = null;
   setStatus(c, 'QUEUED');
-  commit(req, c, 'Returned to queue', prev ? `from ${prev}` : undefined);
+  commit(req, c, 'Returned to queue', prev ? `from ${prev}` : undefined, prevCrewId);
   audit({ ...who(req), action: 'CALL_UNASSIGN', entityType: 'call', entityId: c.id, callNumber: c.callNumber, outcome: 'success' });
   res.json({ call: summarize(c) });
 });
 
-api.post('/calls/:id/status', requireAuth(), requireRole('dispatcher', 'supervisor'), (req, res) => {
+api.post('/calls/:id/status', requireAuth(), requireRole('dispatcher', 'supervisor', 'crew'), (req, res) => {
   const p = z
     .object({
       status: z.enum(['ENROUTE', 'ON_SCENE', 'TRANSPORTING', 'AT_DESTINATION', 'COMPLETED', 'CANCELLED', 'ASSIGNED']),
@@ -434,6 +439,14 @@ api.post('/calls/:id/status', requireAuth(), requireRole('dispatcher', 'supervis
   if (!c) return res.status(404).json({ error: 'NOT_FOUND' });
   if (versionConflict(req, res, c, p.data.expectedVersion, 'CALL_STATUS')) return;
   const { status, reason } = p.data;
+  if (req.user!.role === 'crew') {
+    // Crews may only move their own trips forward through the normal workflow.
+    const allowed = ['ENROUTE', 'ON_SCENE', 'TRANSPORTING', 'AT_DESTINATION', 'COMPLETED'];
+    if (c.crewId !== req.user!.crewId || !allowed.includes(status) || c.status === 'COMPLETED' || c.status === 'CANCELLED') {
+      audit({ ...who(req), action: 'CALL_STATUS', entityType: 'call', entityId: c.id, callNumber: c.callNumber, outcome: 'denied' });
+      return res.status(403).json({ error: 'FORBIDDEN', message: 'Crews can only update their own active trips.' });
+    }
+  }
   if (status === 'CANCELLED' && !reason) return res.status(400).json({ error: 'VALIDATION', message: 'A cancellation reason is required.' });
   if (status !== 'CANCELLED' && !c.crewId) return res.status(400).json({ error: 'INVALID_STATE', message: 'Assign a crew first.' });
   if (c.status === 'COMPLETED' || c.status === 'CANCELLED') {
@@ -442,6 +455,9 @@ api.post('/calls/:id/status', requireAuth(), requireRole('dispatcher', 'supervis
   }
   setStatus(c, status);
   if (status === 'CANCELLED') c.cancelReason = reason;
+  if ((status === 'AT_DESTINATION' || status === 'COMPLETED') && c.loadedMiles == null && c.crewId) {
+    c.loadedMiles = milesSince(c.crewId, c.statusTimes.TRANSPORTING);
+  }
   commit(req, c, `Status: ${STATUSES[status]}`, status === 'CANCELLED' ? `reason: ${reason}` : undefined);
   audit({ ...who(req), action: 'CALL_STATUS', entityType: 'call', entityId: c.id, callNumber: c.callNumber, outcome: 'success', detail: `status=${status}` });
   res.json({ call: summarize(c) });
@@ -481,6 +497,8 @@ api.post('/admin/reset-sample', requireAuth(), requireRole('supervisor'), (req, 
   store.state.calls = fresh.calls;
   store.state.crews = fresh.crews;
   store.state.facilities = fresh.facilities;
+  store.state.patients = fresh.patients;
+  store.state.nextPatientNumber = fresh.nextPatientNumber;
   store.saveNow();
   audit({ ...who(req), action: 'SAMPLE_DATA_RESET', outcome: 'success' });
   store.emit({ type: 'reset', actor: actor(req) });

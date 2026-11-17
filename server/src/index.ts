@@ -5,6 +5,9 @@ import express from 'express';
 import { config } from './config';
 import { log, redactPath } from './log';
 import { attachRealtime } from './realtime';
+import { featuresApi, gpsIngestApi } from './features';
+import { initGps } from './gps';
+import { patientsApi } from './patients';
 import { api } from './routes';
 import { seedState } from './seed';
 import { store } from './store';
@@ -38,17 +41,23 @@ app.use((req, res, next) => {
 app.use((_req, res, next) => {
   res.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   );
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
-  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(self)');
   if (config.isProd) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   next();
 });
 
 const base = express.Router();
+
+// Server-to-server GPS webhook: authenticated by its own key, so it sits before the CSRF check.
+base.use('/api', (_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+}, gpsIngestApi);
 
 base.use(
   '/api',
@@ -61,6 +70,8 @@ base.use(
     next();
   },
   api,
+  patientsApi,
+  featuresApi,
 );
 base.use('/api', (_req, res) => res.status(404).json({ error: 'NOT_FOUND' }));
 
@@ -86,6 +97,7 @@ app.use((err: Error & { type?: string; status?: number }, _req: express.Request,
   res.status(500).json({ error: 'SERVER_ERROR' });
 });
 
+initGps();
 const server = http.createServer(app);
 attachRealtime(server);
 server.listen(config.port, () => {

@@ -45,10 +45,41 @@ immediately, and conflicting actions are caught instead of silently overwriting 
 - Optimistic concurrency: every write carries the version the dispatcher was looking at. If someone else
   changed the call first, the write is rejected (HTTP 409), the board refreshes and the dispatcher is told who changed it
 
+**Patients**
+- Patient database (sample records only) with search by name, DOB, patient number or member ID. Each record shows demographics,
+  insurance, PCS and prior-auth expiry, medical notes, and the patient's **past and scheduled trips**
+- Booking a trip from intake finds or creates the patient record and pre-fills it from the last trip
+- **Paperwork alerts**: missing or expired PCS, and PCS or prior auth expiring within 7 days, flagged on
+  the trip card, call drawer and top bar
+
+**GPS and map**
+- Live truck positions from a third-party GPS provider: a generic JSON webhook, Traccar forwarding, or
+  Samsara polling. Crew headers show speed and how long ago the last fix came in, and go stale after 5 minutes
+- Map view (Leaflet) with every truck, its status and current trip, plus facilities
+- **Closest-unit suggestions** for ASAP calls, ranked by straight-line distance and level of care
+- **Loaded miles** measured from GPS between "Transporting" and "At destination" (dispatchers can edit them)
+- Crew phones can share their location when a truck's GPS unit is down
+
+**Crew mobile screen**
+- Crew accounts sign in on a phone and see today's trips, patient and destination details, and one-tap
+  status buttons (En route → On scene → Transporting → At destination → Clear)
+
+**Reports and exports**
+- Reports for any date range: trips by type, payer, level and status, on-time pickups, ASAP response,
+  cancellation reasons, unit utilization and loaded miles. These hold no patient details. CSV export
+- **Billing export** (supervisor only, audited): completed trips with patient, payer, PCS, auth and loaded miles
+- **Printable run sheets** per crew per day (audited as a PHI print)
+
+**Alerts and administration**
+- Sound and desktop pop-ups for new ASAP calls and trips that are running late (mute from the menu)
+- Supervisor screens for **users** (add, disable, reset password, change role), **crews and trucks**
+  (members, phone, shift, level, GPS device id), and the **facility address book** with map locations
+
 **Roles**
 - `dispatcher`: take and dispatch calls
 - `supervisor`: everything, plus the audit log, reopening closed calls, and resetting sample data
 - `viewer`: read-only board with patient initials only; cannot open patient details
+- `crew`: the mobile crew screen, limited to that crew's own trips
 
 ## Run it locally
 
@@ -67,6 +98,8 @@ Open http://localhost:5173 and sign in with any of these (password `Dispatch!202
 | `dispatch2` | dispatcher |
 | `supervisor` | supervisor |
 | `viewer` | read-only |
+| `medic12` | crew (Medic 12, ALS) |
+| `bls3` | crew (BLS 3) |
 
 Try two dispatchers at once: open a second browser (or a private window), sign in as `dispatch2`, and
 drag calls around in one window while watching the other.
@@ -147,3 +180,29 @@ scripts/  package.cjs (cPanel bundle), users.cjs (account management).
 | `ABSOLUTE_TIMEOUT_HOURS` | `12` | Maximum session length |
 | `SEED_SAMPLE_DATA` | `true` | Create sample calls on first start |
 | `SECURE_COOKIES` | on in production | Override for testing over plain HTTP |
+| `GPS_INGEST_KEY` | | Shared secret for the GPS webhook. The webhook is off until this is set |
+| `GPS_PROVIDER` | | `samsara` to poll Samsara instead of (or as well as) the webhook |
+| `SAMSARA_API_TOKEN` | | Samsara API token, read-only vehicle locations scope |
+| `GPS_POLL_SECONDS` | `15` | Samsara polling interval |
+| `GPS_STALE_MINUTES` | `5` | After this long without a fix a truck is shown as stale |
+| `GPS_SIMULATOR` | on outside production | Moves the sample trucks (device ids starting `SIM-`) for demos |
+| `GPS_SIM_CENTER` | `39.9526,-75.1652` | Where simulated trucks drive, as `lat,lon` |
+| `MAP_TILE_URL` | OpenStreetMap | Map tile URL template. Use a paid tile provider for production traffic |
+| `MAP_ATTRIBUTION` | OpenStreetMap | Attribution text for the tiles |
+
+## Connecting truck GPS
+
+1. In **Menu → Crews & trucks**, set each truck's **GPS device id** to the id your provider uses
+   (IMEI, Traccar unique id, or Samsara vehicle name or id).
+2. Pick one way in:
+   - **Webhook (any provider):** `POST https://YOUR-SITE/api/gps/ingest` with header `X-GPS-Key: <GPS_INGEST_KEY>`
+     and JSON `{"deviceId":"...","lat":..,"lon":..,"speedMph":..,"heading":..,"timestamp":"..."}` (one object,
+     an array, or `{"positions":[...]}`). `latitude`/`longitude`, `speedKph` and `imei` are accepted too.
+   - **Traccar:** set `forward.url` to `https://YOUR-SITE/api/gps/ingest?format=traccar&key=<GPS_INGEST_KEY>`
+     with `forward.json=true`.
+   - **Samsara:** set `GPS_PROVIDER=samsara` and `SAMSARA_API_TOKEN`.
+3. Set `GPS_SIMULATOR=false` in production so only real devices move.
+
+Positions carry no patient data. The map uses OpenStreetMap tiles by default, which are fine for testing;
+their usage policy asks heavy users to bring their own tile provider.
+

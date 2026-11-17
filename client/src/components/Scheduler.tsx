@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { CallSummary, Crew } from '../../../shared/types';
+import type { CallSummary, Crew, GpsPosition } from '../../../shared/types';
 import { ACTIVE_STATUSES, STATUSES, TRIP_TYPES } from '../../../shared/types';
 import { SLOT_MIN, SLOT_PX, SLOTS, fmtTime, sameDay, startOfDay } from '../time';
 import { DRAG_TYPE, dragState } from './CallCard';
@@ -13,6 +13,9 @@ interface Props {
   onOpen: (id: string) => void;
   onAssign: (callId: string, crewId: string, start: Date) => void;
   onToggleCrew: (crew: Crew, reason: string) => void;
+  gps: Record<string, GpsPosition>;
+  staleMinutes: number;
+  onPrint?: (crew: Crew) => void;
 }
 
 const DAY_PX = SLOTS * SLOT_PX;
@@ -100,7 +103,17 @@ export function Scheduler(p: Props) {
         <div className="sched-head">
           <div className="corner">{p.crews.length} units</div>
           {p.crews.map((crew) => (
-            <CrewHeader key={crew.id} crew={crew} trips={(byCrew[crew.id] || []).length} canEdit={p.canEdit} onToggle={p.onToggleCrew} />
+            <CrewHeader
+              key={crew.id}
+              crew={crew}
+              trips={(byCrew[crew.id] || []).length}
+              canEdit={p.canEdit}
+              onToggle={p.onToggleCrew}
+              pos={crew.gpsDeviceId ? p.gps[crew.gpsDeviceId] : undefined}
+              staleMinutes={p.staleMinutes}
+              now={now}
+              onPrint={p.onPrint}
+            />
           ))}
         </div>
         <div className="sched-body" style={{ height: DAY_PX }}>
@@ -166,7 +179,33 @@ export function Scheduler(p: Props) {
   );
 }
 
-function CrewHeader({ crew, trips, canEdit, onToggle }: { crew: Crew; trips: number; canEdit: boolean; onToggle: (c: Crew, r: string) => void }) {
+export function gpsLabel(pos: GpsPosition | undefined, staleMinutes: number, now = Date.now()) {
+  if (!pos) return { text: 'No GPS', stale: true };
+  const age = Math.max(0, Math.round((now - Date.parse(pos.at)) / 60000));
+  const stale = age >= staleMinutes;
+  return { text: `${pos.speedMph > 2 ? `${Math.round(pos.speedMph)} mph` : 'Stopped'} · ${age < 1 ? 'now' : `${age}m ago`}`, stale };
+}
+
+function CrewHeader({
+  crew,
+  trips,
+  canEdit,
+  onToggle,
+  pos,
+  staleMinutes,
+  now,
+  onPrint,
+}: {
+  crew: Crew;
+  trips: number;
+  canEdit: boolean;
+  onToggle: (c: Crew, r: string) => void;
+  pos?: GpsPosition;
+  staleMinutes: number;
+  now: number;
+  onPrint?: (c: Crew) => void;
+}) {
+  const g = gpsLabel(pos, staleMinutes, now);
   const [editing, setEditing] = useState(false);
   const [reason, setReason] = useState('');
   return (
@@ -187,6 +226,14 @@ function CrewHeader({ crew, trips, canEdit, onToggle }: { crew: Crew; trips: num
       </div>
       <div className="ch-line muted">
         Shift {crew.shiftStart}–{crew.shiftEnd} · {trips} trip{trips === 1 ? '' : 's'}
+      </div>
+      <div className={`ch-line gps ${g.stale ? 'stale' : ''}`} title={pos ? `GPS ${pos.deviceId} via ${pos.source}` : 'No position received from this truck'}>
+        📍 {g.text}
+        {onPrint && (
+          <button className="link small print-btn" onClick={() => onPrint(crew)}>
+            Run sheet
+          </button>
+        )}
       </div>
       {crew.outOfService && <div className="oos-tag">OUT OF SERVICE{crew.oosReason ? `: ${crew.oosReason}` : ''}</div>}
       {canEdit &&
@@ -255,6 +302,11 @@ function TripBlock({
       <div className="tb-row">
         <b>{c.callNumber}</b>
         <span className={`lvl ${c.level.toLowerCase()}`}>{c.level}</span>
+        {c.alerts.length > 0 && (
+          <span className="paper" title={c.alerts.join(', ')}>
+            ⚠
+          </span>
+        )}
         <span className="tb-status">{late ? 'LATE' : STATUSES[c.status]}</span>
       </div>
       <div className="tb-row">

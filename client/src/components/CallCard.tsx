@@ -13,7 +13,7 @@ export function callFlags(c: CallSummary) {
   if (c.equipment.includes('VENTILATOR')) f.push('Vent');
   if (c.equipment.includes('ISOLATION')) f.push('Isolation');
   if (c.equipment.includes('OXYGEN')) f.push('O₂');
-  if (!c.pcsOnFile && c.tripType !== 'SNF_TO_ER') f.push('No PCS');
+  f.push(...c.alerts);
   if (c.level === 'BLS' && c.equipment.some((e) => ALS_EQUIPMENT.includes(e))) f.push('ALS equip.');
   return f;
 }
@@ -58,7 +58,7 @@ export function QueueCard({ c, canEdit, onOpen }: { c: CallSummary; canEdit: boo
       {(c.equipment.length > 0 || callFlags(c).length > 0) && (
         <div className="qrow chips">
           {callFlags(c).map((f) => (
-            <span key={f} className={`chip ${f === 'No PCS' || f === 'ALS equip.' ? 'warn' : ''}`}>
+            <span key={f} className={`chip ${c.alerts.includes(f) || f === 'ALS equip.' ? 'warn' : ''}`}>
               {f}
             </span>
           ))}

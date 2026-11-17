@@ -1,15 +1,16 @@
-import { useMemo, useState } from 'react';
-import type { Call, CallSummary, Equipment, Facility, Level, PickupMode, TripType } from '../../../shared/types';
+import { useEffect, useMemo, useState } from 'react';
+import type { Call, CallSummary, Equipment, Facility, Level, Patient, PatientSummary, PickupMode, TripType } from '../../../shared/types';
 import { ALS_EQUIPMENT, BARIATRIC_LBS, DEFAULT_DURATION_MIN, EQUIPMENT, TRIP_TYPES, ageFromDob } from '../../../shared/types';
 import { ApiError, api } from '../api';
 import { fromLocalInput, toLocalInput } from '../time';
 
-export type IntakeInit = { mode: 'new' } | { mode: 'edit'; call: Call };
+export type IntakeInit = { mode: 'new'; patient?: Patient } | { mode: 'edit'; call: Call };
 
 const PAYERS = ['Medicare Part A', 'Medicare Part B', 'Medicaid', 'Medicare Advantage', 'Commercial / Private', 'VA / Tricare', 'Workers comp', 'Self-pay', 'Facility contract'];
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 interface Form {
+  patientId: string | null;
   firstName: string;
   lastName: string;
   dob: string;
@@ -41,6 +42,7 @@ function initial(init: IntakeInit): Form {
   if (init.mode === 'edit') {
     const c = init.call;
     return {
+      patientId: c.patientId,
       firstName: c.patient.firstName,
       lastName: c.patient.lastName,
       dob: c.patient.dob,
@@ -68,7 +70,8 @@ function initial(init: IntakeInit): Form {
       weeks: 4,
     };
   }
-  return {
+  const base: Form = {
+    patientId: null,
     firstName: '',
     lastName: '',
     dob: '',
@@ -95,6 +98,30 @@ function initial(init: IntakeInit): Form {
     weekdays: [1, 3, 5],
     weeks: 4,
   };
+  return init.patient ? fromPatient(base, init.patient) : base;
+}
+
+/** Fill the form from a patient record (the usual details for this patient). */
+function fromPatient(f: Form, p: Patient): Form {
+  const today = new Date().toISOString().slice(0, 10);
+  return {
+    ...f,
+    patientId: p.id,
+    firstName: p.firstName,
+    lastName: p.lastName,
+    dob: p.dob,
+    weight: String(p.weightLbs),
+    weightUnit: 'lb',
+    payer: p.insurance.payer,
+    memberId: p.insurance.memberId,
+    priorAuth: p.priorAuth.number && (!p.priorAuth.expires || p.priorAuth.expires >= today) ? p.priorAuth.number : '',
+    pcsOnFile: !!p.pcsExpires && p.pcsExpires >= today,
+    level: p.defaultLevel,
+    equipment: p.defaultEquipment,
+    stretcherReason: p.stretcherReason || f.stretcherReason,
+    chiefComplaint: f.chiefComplaint || p.medicalNotes.slice(0, 300),
+    pickupLocation: f.pickupLocation || p.address,
+  };
 }
 
 export function IntakeModal({
@@ -115,6 +142,26 @@ export function IntakeModal({
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState('');
   const editing = init.mode === 'edit';
+  const [pq, setPq] = useState('');
+  const [matches, setMatches] = useState<PatientSummary[]>([]);
+  useEffect(() => {
+    if (pq.trim().length < 2) {
+      setMatches([]);
+      return;
+    }
+    const t = window.setTimeout(() => {
+      api<{ patients: PatientSummary[] }>('patients/search', { body: { q: pq } })
+        .then((r) => setMatches(r.patients.slice(0, 8)))
+        .catch(() => {});
+    }, 250);
+    return () => window.clearTimeout(t);
+  }, [pq]);
+  const pickPatient = async (id: string) => {
+    const r = await api<{ patient: Patient }>(`patients/${id}`);
+    setF((x) => fromPatient(x, r.patient));
+    setPq('');
+    setMatches([]);
+  };
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setF((x) => ({ ...x, [k]: v }));
 
   const weightLbs = useMemo(() => {
@@ -153,46 +200,15 @@ export function IntakeModal({
     };
     try {
       if (editing) {
-        const r = await api<{ call: Call }>(`calls/${init.call.id}`, {
+        const r = await api<{ call: Call; summary: CallSummary }>(`calls/${init.call.id}`, {
           method: 'PATCH',
           body: { ...body, expectedVersion: init.call.version },
         });
-        const c = r.call;
-        onSaved(
-          [
-            {
-              id: c.id,
-              callNumber: c.callNumber,
-              version: c.version,
-              status: c.status,
-              statusTimes: c.statusTimes,
-              level: c.level,
-              tripType: c.tripType,
-              patientDisplay: `${c.patient.lastName}, ${c.patient.firstName.charAt(0)}.`,
-              age: ageFromDob(c.patient.dob),
-              weightLbs: c.patient.weightLbs,
-              equipment: c.equipment,
-              pcsOnFile: c.pcsOnFile,
-              pickupMode: c.pickupMode,
-              pickupTime: c.pickupTime,
-              pickupLocation: c.pickupLocation,
-              destination: c.destination,
-              durationMin: c.durationMin,
-              crewId: c.crewId,
-              scheduledStart: c.scheduledStart,
-              leg: c.leg,
-              linkedCallId: c.linkedCallId,
-              seriesId: c.seriesId,
-              createdAt: c.createdAt,
-              updatedAt: c.updatedAt,
-              updatedBy: c.updatedBy,
-            },
-          ],
-          `${c.callNumber} updated`,
-        );
+        onSaved([r.summary], `${r.call.callNumber} updated`);
       } else {
         body.returnTrip = f.returnMode === 'NONE' ? null : { mode: f.returnMode, pickupTime: f.returnMode === 'SCHEDULED' ? fromLocalInput(f.returnTime) : null };
         body.recurrence = f.recurring ? { weekdays: f.weekdays, weeks: Number(f.weeks) } : null;
+        body.patientId = f.patientId;
         const r = await api<{ calls: CallSummary[] }>('calls', { body });
         onSaved(r.calls, r.calls.length === 1 ? `${r.calls[0].callNumber} created and queued` : `${r.calls.length} trips created and queued`);
       }
@@ -265,6 +281,33 @@ export function IntakeModal({
 
           <fieldset>
             <legend>Patient</legend>
+            {!editing &&
+              (f.patientId ? (
+                <div className="patient-linked">
+                  Linked to existing patient record.{' '}
+                  <button type="button" className="link" onClick={() => set('patientId', null)}>
+                    Treat as a new patient
+                  </button>
+                </div>
+              ) : (
+                <div className="psearch">
+                  <input placeholder="Find existing patient: name, patient #, DOB or member ID" value={pq} onChange={(e) => setPq(e.target.value)} />
+                  {matches.length > 0 && (
+                    <div className="psearch-results">
+                      {matches.map((m) => (
+                        <button type="button" key={m.id} onClick={() => pickPatient(m.id)}>
+                          <b>{m.name}</b> <span className="muted">· {m.dob} · {m.patientNumber} · {m.payer}</span>
+                          {m.alerts.map((a) => (
+                            <span key={a} className="chip warn">
+                              {a}
+                            </span>
+                          ))}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
             <div className="grid g4">
               <label>
                 Last name

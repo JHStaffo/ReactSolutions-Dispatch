@@ -38,7 +38,7 @@ const day = () => {
 before(async () => {
   proc = spawn(process.execPath, ['app.js'], {
     cwd: path.join(__dirname, '..', '..'),
-    env: { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, NODE_ENV: 'test' },
+    env: { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, NODE_ENV: 'test', GPS_INGEST_KEY: 'test-gps-key', GPS_SIMULATOR: 'false' },
     stdio: 'ignore',
   });
   for (let i = 0; i < 50; i++) {
@@ -157,4 +157,92 @@ test('audit log records PHI access without PHI values', async () => {
   assert.ok(a.body.entries.some((e) => e.action === 'CALL_VIEW_PHI'));
   const raw = fs.readFileSync(path.join(dataDir, 'audit.log'), 'utf8');
   assert.doesNotMatch(raw, /Fakename|Testcase|gate code/);
+});
+
+test('patient records link to past and upcoming trips', async () => {
+  const d1 = await login('dispatch1');
+  const s = await d1('patients/search', { q: 'sample ada' });
+  assert.equal(s.status, 200);
+  assert.equal(s.body.patients.length, 1);
+  assert.equal(s.body.patients[0].dob, '1948-03-14');
+  const p = await d1(`patients/${s.body.patients[0].id}`);
+  assert.ok(p.body.trips.some((t) => t.status === 'COMPLETED'));
+  assert.ok(p.body.trips.some((t) => t.status !== 'COMPLETED'));
+  // Paperwork alerts flow onto the patient's open trips.
+  const upd = await d1(`patients/${p.body.patient.id}`, { pcsExpires: '2000-01-01', expectedVersion: p.body.patient.version }, 'PATCH');
+  assert.equal(upd.status, 200);
+  const again = await d1(`patients/${p.body.patient.id}`);
+  assert.ok(again.body.trips.filter((t) => t.status !== 'COMPLETED' && t.status !== 'CANCELLED').every((t) => t.alerts.includes('PCS expired')));
+  // Viewers and crews cannot read patient records.
+  const v = await login('viewer');
+  assert.equal((await v('patients/search', { q: 'a' })).status, 403);
+});
+
+test('GPS webhook requires the key and accepts generic and Traccar formats', async () => {
+  const post = (q, body, key) =>
+    fetch(BASE + 'gps/ingest' + q, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(key ? { 'X-GPS-Key': key } : {}) }, body: JSON.stringify(body) });
+  assert.equal((await post('', { deviceId: 'SIM-412', lat: 39.9, lon: -75.1 })).status, 401);
+  assert.equal((await post('', { deviceId: 'SIM-412', lat: 39.9, lon: -75.1 }, 'wrong-key-12')).status, 401);
+  const g = await post('', [{ deviceId: 'SIM-412', lat: 39.95, lon: -75.16, speedKph: 50, timestamp: new Date().toISOString() }], 'test-gps-key');
+  assert.equal((await g.json()).accepted, 1);
+  const t = await post('?format=traccar', { position: { latitude: 39.96, longitude: -75.15, speed: 10, course: 180, fixTime: new Date(Date.now() + 1000).toISOString() }, device: { uniqueId: 'SIM-412' } }, 'test-gps-key');
+  assert.equal((await t.json()).accepted, 1);
+  const d1 = await login('dispatch1');
+  const pos = (await d1('gps')).body.positions.find((p) => p.deviceId === 'SIM-412');
+  assert.equal(pos.crewId, 'crew-m12');
+  assert.equal(pos.lat, 39.96);
+  assert.equal(pos.speedMph, 11.5);
+});
+
+test('crew accounts see only their own trips and can only move them forward', async () => {
+  const crew = await login('bls3');
+  const mine = await crew('crew/my-trips');
+  assert.equal(mine.status, 200);
+  assert.ok(mine.body.trips.length > 0);
+  assert.ok(mine.body.trips.every((t) => t.crewId === 'crew-b3'));
+  assert.equal((await crew('board', day())).status, 403);
+  const d1 = await login('dispatch1');
+  const other = (await d1('board', day())).body.calls.find((c) => c.crewId && c.crewId !== 'crew-b3' && c.status === 'ASSIGNED');
+  assert.equal((await crew(`calls/${other.id}/status`, { status: 'ENROUTE', expectedVersion: other.version })).status, 403);
+  const t = mine.body.trips.find((x) => x.status === 'ASSIGNED');
+  assert.equal((await crew(`calls/${t.id}/status`, { status: 'CANCELLED', expectedVersion: t.version, reason: 'x' })).status, 403);
+  assert.equal((await crew(`calls/${t.id}/status`, { status: 'ENROUTE', expectedVersion: t.version })).status, 200);
+});
+
+test('reports have no PHI; billing export is supervisor-only and audited', async () => {
+  const d1 = await login('dispatch1');
+  const from = new Date(Date.now() - 30 * 86400000).toISOString();
+  const to = new Date(Date.now() + 86400000).toISOString();
+  const r = await d1('reports/summary', { from, to });
+  assert.equal(r.status, 200);
+  assert.ok(r.body.completed > 0);
+  assert.doesNotMatch(JSON.stringify(r.body), /Testcase|Fakename|1948-03-14|SMP-0001/);
+  assert.equal((await d1('exports/billing', { from, to })).status, 403);
+  const sup = await login('supervisor');
+  const res = await fetch(BASE + 'exports/billing', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'dispatch', Cookie: (await (async () => {
+      const lr = await fetch(BASE + 'auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'dispatch' }, body: JSON.stringify({ username: 'supervisor', password: 'Dispatch!2026' }) });
+      return lr.headers.get('set-cookie').split(';')[0];
+    })()) },
+    body: JSON.stringify({ from, to }),
+  });
+  const csv = await res.text();
+  assert.match(csv.split('\r\n')[0], /^Call #,Date of service,Patient #/);
+  assert.ok(csv.split('\r\n').length > 3);
+  const a = await sup('audit');
+  assert.ok(a.body.entries.some((e) => e.action === 'PHI_EXPORT_BILLING'));
+});
+
+test('supervisors manage users; disabled users are signed out', async () => {
+  const sup = await login('supervisor');
+  const add = await sup('admin/users', { username: 'temp1', displayName: 'Temp', role: 'dispatcher', password: 'a-long-password-1' });
+  assert.equal(add.status, 201);
+  const r = await fetch(BASE + 'auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'dispatch' }, body: JSON.stringify({ username: 'temp1', password: 'a-long-password-1' }) });
+  const cookie = r.headers.get('set-cookie').split(';')[0];
+  await sup('admin/users/temp1', { disabled: true }, 'PATCH');
+  const me = await fetch(BASE + 'auth/me', { headers: { Cookie: cookie } });
+  assert.equal(me.status, 401);
+  const d1 = await login('dispatch1');
+  assert.equal((await d1('admin/users')).status, 403);
 });

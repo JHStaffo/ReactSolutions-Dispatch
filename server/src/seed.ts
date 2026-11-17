@@ -1,11 +1,11 @@
 import crypto from 'node:crypto';
-import type { Call, Crew, Equipment, Facility, Level, PickupMode, TripType } from '../../shared/types';
+import type { Call, Crew, Equipment, Facility, Level, Patient, PickupMode, TripType } from '../../shared/types';
 import { hashPassword } from './crypto';
 import type { State, StoredUser } from './store';
 
 // Everything below is FICTIONAL sample data. Phone numbers use the reserved 555-01xx range.
 
-const crews: Omit<Crew, 'version' | 'outOfService' | 'oosReason'>[] = [
+const crews: Omit<Crew, 'version' | 'outOfService' | 'oosReason' | 'gpsDeviceId' | 'active'>[] = [
   { id: 'crew-m12', unit: 'Medic 12', vehicle: 'Truck 412', phone: '(555) 010-1212', level: 'ALS', shiftStart: '06:00', shiftEnd: '18:00',
     members: [{ name: 'R. Alvarez', cert: 'Paramedic' }, { name: 'K. Brennan', cert: 'EMT' }] },
   { id: 'crew-m14', unit: 'Medic 14', vehicle: 'Truck 414', phone: '(555) 010-1414', level: 'ALS', shiftStart: '07:00', shiftEnd: '19:00',
@@ -24,20 +24,23 @@ const crews: Omit<Crew, 'version' | 'outOfService' | 'oosReason'>[] = [
     members: [{ name: 'E. Sato', cert: 'Paramedic' }, { name: 'W. Grant', cert: 'EMT' }] },
 ];
 
+// Coordinates are around GPS_SIM_CENTER (default: Philadelphia, PA) so the demo map has something to show.
 const facilities: Facility[] = [
-  { id: 'f1', name: 'Riverside Dialysis Center', kind: 'Dialysis', address: '100 River Rd, Suite 2', phone: '(555) 010-4001' },
-  { id: 'f2', name: 'Northgate Kidney Care', kind: 'Dialysis', address: '2250 Northgate Blvd', phone: '(555) 010-4002' },
-  { id: 'f3', name: 'Mercy General Hospital', kind: 'Hospital', address: '500 Mercy Way', phone: '(555) 010-4003' },
-  { id: 'f4', name: 'St. Anselm Medical Center', kind: 'Hospital', address: '77 Cathedral Ave', phone: '(555) 010-4004' },
-  { id: 'f5', name: 'Lakeview Regional ER', kind: 'Hospital', address: '1 Lakeview Dr', phone: '(555) 010-4005' },
-  { id: 'f6', name: 'Oak Hollow Skilled Nursing', kind: 'SNF', address: '48 Oak Hollow Ln', phone: '(555) 010-4006' },
-  { id: 'f7', name: 'Maple Gardens Rehab & SNF', kind: 'SNF', address: '913 Maple St', phone: '(555) 010-4007' },
-  { id: 'f8', name: 'Summit Cardiology Clinic', kind: 'Clinic', address: '3400 Summit Pkwy, Fl 3', phone: '(555) 010-4008' },
-  { id: 'f9', name: 'Eastside Orthopedics', kind: 'Clinic', address: '61 East Market St', phone: '(555) 010-4009' },
-  { id: 'f10', name: 'Valley Imaging Center', kind: 'Clinic', address: '820 Valley View Rd', phone: '(555) 010-4010' },
+  { id: 'f1', name: 'Riverside Dialysis Center', kind: 'Dialysis', address: '100 River Rd, Suite 2', phone: '(555) 010-4001', lat: 39.9612, lon: -75.1405 },
+  { id: 'f2', name: 'Northgate Kidney Care', kind: 'Dialysis', address: '2250 Northgate Blvd', phone: '(555) 010-4002', lat: 40.0321, lon: -75.1527 },
+  { id: 'f3', name: 'Mercy General Hospital', kind: 'Hospital', address: '500 Mercy Way', phone: '(555) 010-4003', lat: 39.9489, lon: -75.1934 },
+  { id: 'f4', name: 'St. Anselm Medical Center', kind: 'Hospital', address: '77 Cathedral Ave', phone: '(555) 010-4004', lat: 39.9957, lon: -75.1732 },
+  { id: 'f5', name: 'Lakeview Regional ER', kind: 'Hospital', address: '1 Lakeview Dr', phone: '(555) 010-4005', lat: 39.9225, lon: -75.1709 },
+  { id: 'f6', name: 'Oak Hollow Skilled Nursing', kind: 'SNF', address: '48 Oak Hollow Ln', phone: '(555) 010-4006', lat: 40.0105, lon: -75.2101 },
+  { id: 'f7', name: 'Maple Gardens Rehab & SNF', kind: 'SNF', address: '913 Maple St', phone: '(555) 010-4007', lat: 39.9767, lon: -75.1203 },
+  { id: 'f8', name: 'Summit Cardiology Clinic', kind: 'Clinic', address: '3400 Summit Pkwy, Fl 3', phone: '(555) 010-4008', lat: 39.9541, lon: -75.1601 },
+  { id: 'f9', name: 'Eastside Orthopedics', kind: 'Clinic', address: '61 East Market St', phone: '(555) 010-4009', lat: 39.9502, lon: -75.1452 },
+  { id: 'f10', name: 'Valley Imaging Center', kind: 'Clinic', address: '820 Valley View Rd', phone: '(555) 010-4010', lat: 39.9878, lon: -75.2389 },
 ];
 
 const users: Array<Omit<StoredUser, 'passwordHash' | 'disabled'>> = [
+  { username: 'medic12', displayName: 'Medic 12 Crew', role: 'crew', crewId: 'crew-m12' },
+  { username: 'bls3', displayName: 'BLS 3 Crew', role: 'crew', crewId: 'crew-b3' },
   { username: 'dispatch1', displayName: 'Dispatcher One', role: 'dispatcher' },
   { username: 'dispatch2', displayName: 'Dispatcher Two', role: 'dispatcher' },
   { username: 'supervisor', displayName: 'Shift Supervisor', role: 'supervisor' },
@@ -95,68 +98,185 @@ const sample: SampleCall[] = [
     mode: 'SCHEDULED', at: '16:30', crew: 'crew-m21', status: 'ASSIGNED', dur: 45 },
 ];
 
-function atToday(hhmm: string): string {
+function atDay(hhmm: string, dayOffset = 0): string {
   const [h, m] = hhmm.split(':').map(Number);
   const d = new Date();
+  d.setDate(d.getDate() + dayOffset);
   d.setHours(h, m, 0, 0);
   return d.toISOString();
 }
 
-export function seedState(): State {
+const isoDay = (offset: number) => {
+  const d = new Date();
+  d.setDate(d.getDate() + offset);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+/** Per-patient paperwork for the demo: some current, one expired, one expiring, one missing. */
+const paperwork: Record<string, { pcs: number | null; auth?: [string, number] }> = {
+  Sample: { pcs: 45 },
+  Testcase: { pcs: -5 },
+  Demo: { pcs: 20 },
+  Placeholder: { pcs: 30 },
+  Mockwell: { pcs: 3 },
+  Fakename: { pcs: null },
+  Specimen: { pcs: null },
+  Example: { pcs: 25, auth: ['PA-SMPL-7781', 20] },
+  Trial: { pcs: 60 },
+  Dummy: { pcs: 10 },
+  Fixture: { pcs: null },
+};
+
+function makeCall(s: SampleCall, n: number, dayOffset: number, now: string): Call {
+  const pickupTime = s.at ? atDay(s.at, dayOffset) : null;
+  const status = s.status ?? (s.crew ? 'ASSIGNED' : 'QUEUED');
+  const t = pickupTime ?? now;
+  const plus = (min: number) => new Date(Date.parse(t) + min * 60000).toISOString();
+  const statusTimes: Call['statusTimes'] = { QUEUED: dayOffset < 0 ? plus(-24 * 60) : now };
+  if (s.crew) statusTimes.ASSIGNED = dayOffset < 0 ? plus(-20 * 60) : now;
+  if (status === 'ENROUTE' || status === 'COMPLETED') statusTimes.ENROUTE = dayOffset < 0 ? plus(-25) : now;
+  if (status === 'COMPLETED')
+    Object.assign(statusTimes, { ON_SCENE: plus(-3 + (n % 4) * 6), TRANSPORTING: plus(12), AT_DESTINATION: plus(38), COMPLETED: plus(45) });
+  return {
+    id: crypto.randomUUID(),
+    callNumber: `SMPL-${String(n).padStart(4, '0')}`,
+    version: 1,
+    status,
+    statusTimes,
+    level: s.level,
+    tripType: s.trip,
+    patient: { firstName: s.first, lastName: s.last, dob: s.dob, weightLbs: s.lbs },
+    insurance: { payer: s.payer, memberId: s.member, priorAuth: paperwork[s.last]?.auth?.[0] ?? '' },
+    pcsOnFile: paperwork[s.last]?.pcs != null,
+    equipment: s.eq,
+    chiefComplaint: s.cc,
+    stretcherReason: s.why,
+    pickupMode: s.mode,
+    pickupTime,
+    pickupLocation: s.from,
+    destination: s.to,
+    durationMin: s.dur ?? 60,
+    notes: '',
+    crewId: s.crew ?? null,
+    scheduledStart: s.crew ? pickupTime : null,
+    cancelReason: '',
+    linkedCallId: null,
+    leg: s.leg ?? 'ONE_WAY',
+    seriesId: null,
+    patientId: null,
+    loadedMiles: status === 'COMPLETED' ? Math.round((3 + ((n * 7) % 90) / 10) * 10) / 10 : null,
+    history: [{ ts: now, actor: 'system', action: 'Created (sample data)' }],
+    createdAt: statusTimes.QUEUED!,
+    createdBy: 'system',
+    updatedAt: now,
+    updatedBy: 'system',
+  };
+}
+
+export function samplePatientsAndCalls(): { patients: Patient[]; calls: Call[] } {
   const now = new Date().toISOString();
   let n = 1;
-  const calls: Call[] = sample.map((s) => {
-    const pickupTime = s.at ? atToday(s.at) : null;
-    const status = s.status ?? (s.crew ? 'ASSIGNED' : 'QUEUED');
-    const statusTimes: Call['statusTimes'] = { QUEUED: now };
-    if (s.crew) statusTimes.ASSIGNED = now;
-    if (status === 'ENROUTE' || status === 'COMPLETED') statusTimes.ENROUTE = now;
-    if (status === 'COMPLETED') Object.assign(statusTimes, { ON_SCENE: now, TRANSPORTING: now, AT_DESTINATION: now, COMPLETED: now });
-    return {
-      id: crypto.randomUUID(),
-      callNumber: `SMPL-${String(n++).padStart(4, '0')}`,
-      version: 1,
-      status,
-      statusTimes,
-      level: s.level,
-      tripType: s.trip,
-      patient: { firstName: s.first, lastName: s.last, dob: s.dob, weightLbs: s.lbs },
-      insurance: { payer: s.payer, memberId: s.member, priorAuth: '' },
-      pcsOnFile: s.trip !== 'SNF_TO_ER',
-      equipment: s.eq,
-      chiefComplaint: s.cc,
-      stretcherReason: s.why,
-      pickupMode: s.mode,
-      pickupTime,
-      pickupLocation: s.from,
-      destination: s.to,
-      durationMin: s.dur ?? 60,
-      notes: '',
-      crewId: s.crew ?? null,
-      scheduledStart: s.crew ? pickupTime : null,
-      cancelReason: '',
-      linkedCallId: null,
-      leg: s.leg ?? 'ONE_WAY',
-      seriesId: null,
-      history: [{ ts: now, actor: 'system', action: 'Created (sample data)' }],
-      createdAt: now,
-      createdBy: 'system',
-      updatedAt: now,
-      updatedBy: 'system',
-    };
-  });
-  // Link the sample round trips (outbound immediately followed by its return).
-  for (let i = 0; i < calls.length - 1; i++) {
-    if (calls[i].leg === 'OUTBOUND' && calls[i + 1].leg === 'RETURN') {
-      calls[i].linkedCallId = calls[i + 1].id;
-      calls[i + 1].linkedCallId = calls[i].id;
+  const calls: Call[] = [];
+  // Two weeks of completed history for the standing dialysis patients (Mon/Wed/Fri).
+  for (let off = -14; off < 0; off++) {
+    const d = new Date();
+    d.setDate(d.getDate() + off);
+    if (![1, 3, 5].includes(d.getDay())) continue;
+    for (const s of sample.filter((x) => x.trip === 'DIALYSIS' && (x.last === 'Sample' || x.last === 'Testcase'))) {
+      calls.push(makeCall({ ...s, status: 'COMPLETED', crew: s.crew ?? 'crew-b5' }, n++, off, now));
     }
   }
+  // A few one-off past trips.
+  for (const [last, off] of [['Mockwell', -9], ['Example', -6], ['Dummy', -3], ['Fakename', -12]] as const) {
+    const s = sample.find((x) => x.last === last)!;
+    calls.push(makeCall({ ...s, mode: 'SCHEDULED', at: s.at ?? '10:00', status: 'COMPLETED', crew: s.crew ?? (s.level === 'ALS' ? 'crew-m14' : 'crew-b7') }, n++, off, now));
+  }
+  // A cancelled one so the reports have something to show.
+  const cx = makeCall({ ...sample.find((x) => x.last === 'Specimen')!, crew: undefined, status: 'CANCELLED' }, n++, -2, now);
+  cx.cancelReason = 'Patient refused transport';
+  cx.statusTimes.CANCELLED = cx.pickupTime!;
+  calls.push(cx);
+  // Today.
+  const today = sample.map((s) => makeCall(s, n++, 0, now));
+  for (let i = 0; i < today.length - 1; i++) {
+    if (today[i].leg === 'OUTBOUND' && today[i + 1].leg === 'RETURN') {
+      today[i].linkedCallId = today[i + 1].id;
+      today[i + 1].linkedCallId = today[i].id;
+    }
+  }
+  calls.push(...today);
+  // Upcoming dialysis for the next week so patient records show scheduled trips.
+  for (let off = 1; off <= 7; off++) {
+    const d = new Date();
+    d.setDate(d.getDate() + off);
+    if (![1, 3, 5].includes(d.getDay())) continue;
+    for (const s of sample.filter((x) => x.trip === 'DIALYSIS' && x.last === 'Sample')) {
+      calls.push(makeCall({ ...s, status: undefined, crew: undefined }, n++, off, now));
+    }
+  }
+
+  // One patient record per distinct person, linked to their trips.
+  const patients: Patient[] = [];
+  let pn = 1;
+  for (const c of calls) {
+    let p = patients.find((x) => x.lastName === c.patient.lastName && x.firstName === c.patient.firstName && x.dob === c.patient.dob);
+    if (!p) {
+      const pw = paperwork[c.patient.lastName] ?? { pcs: null };
+      const residence = [c.pickupLocation, c.destination].find((x) => /residence|walk-up/i.test(x));
+      const snf = [c.pickupLocation, c.destination].find((x) => /Nursing|SNF/i.test(x));
+      p = {
+        id: crypto.randomUUID(),
+        patientNumber: `P-${String(pn++).padStart(6, '0')}`,
+        version: 1,
+        firstName: c.patient.firstName,
+        lastName: c.patient.lastName,
+        dob: c.patient.dob,
+        sex: pn % 2 ? 'F' : 'M',
+        weightLbs: c.patient.weightLbs,
+        phone: `(555) 010-${String(5000 + pn).slice(-4)}`,
+        address: residence ?? snf ?? '',
+        insurance: { payer: c.insurance.payer, memberId: c.insurance.memberId },
+        pcsExpires: pw.pcs == null ? null : isoDay(pw.pcs),
+        priorAuth: { number: pw.auth?.[0] ?? '', expires: pw.auth ? isoDay(pw.auth[1]) : null, tripsAuthorized: pw.auth ? 12 : null },
+        defaultLevel: c.level,
+        defaultEquipment: c.equipment,
+        stretcherReason: c.stretcherReason,
+        medicalNotes: c.chiefComplaint,
+        active: true,
+        createdAt: now,
+        updatedAt: now,
+        updatedBy: 'system',
+      };
+      patients.push(p);
+    }
+    c.patientId = p.id;
+  }
+  return { patients, calls };
+}
+
+export function sampleCrews(): Crew[] {
+  return crews.map((c) => ({
+    ...c,
+    outOfService: false,
+    oosReason: '',
+    gpsDeviceId: `SIM-${c.vehicle.replace(/\D/g, '')}`,
+    active: true,
+    version: 1,
+  }));
+}
+
+export function seedState(): State {
+  const { patients, calls } = samplePatientsAndCalls();
   return {
-    crews: crews.map((c) => ({ ...c, outOfService: false, oosReason: '', version: 1 })),
+    crews: sampleCrews(),
     calls,
     facilities,
     users: users.map((u) => ({ ...u, passwordHash: hashPassword(DEMO_PASSWORD), disabled: false })),
+    patients,
     nextCallNumber: 1,
+    nextPatientNumber: patients.length + 1,
+    lastPositions: [],
   };
 }
+
+export const sampleFacilities = () => facilities.map((f) => ({ ...f }));

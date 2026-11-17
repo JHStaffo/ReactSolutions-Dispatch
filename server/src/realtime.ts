@@ -62,10 +62,21 @@ export function attachRealtime(server: Server) {
     });
   });
 
-  store.subscribe((e: ServerEvent) => {
+  store.subscribe((e: ServerEvent & { prevCrewId?: string | null }) => {
     for (const c of clients) {
       if (c.ws.readyState !== WebSocket.OPEN) continue;
-      const out = e.type === 'call' ? { ...e, call: forRole(e.call, c.user.role) } : e;
+      if (c.user.role === 'crew') {
+        // Crews get no other units' data: just a nudge to reload their own trip list.
+        if (e.type === 'call' && (e.call.crewId === c.user.crewId || e.prevCrewId === c.user.crewId))
+          c.ws.send(JSON.stringify({ type: 'crew-refresh' }));
+        if (e.type === 'reset') c.ws.send(JSON.stringify({ type: 'crew-refresh' }));
+        continue;
+      }
+      let out: unknown = e;
+      if (e.type === 'call') {
+        const { prevCrewId: _p, ...rest } = e;
+        out = { ...rest, call: forRole(e.call, c.user.role) };
+      }
       c.ws.send(JSON.stringify(out));
     }
   });

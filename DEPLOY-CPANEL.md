@@ -50,6 +50,10 @@ Add these **environment variables**, then click **Create**:
 | `APP_BASE_PATH` | only if the Application URL is a sub-folder, e.g. `/dispatch` |
 | `SEED_SAMPLE_DATA` | `true` for the demo; `false` to start with no sample calls |
 | `IDLE_TIMEOUT_MINUTES` | optional, default `15` |
+| `GPS_INGEST_KEY` | long random string; turns on the GPS webhook (see README, "Connecting truck GPS") |
+| `GPS_SIMULATOR` | `true` to keep the sample trucks moving for a demo, `false` once real GPS is connected |
+| `GPS_SIM_CENTER` | optional `lat,lon` of your service area for the simulated trucks |
+| `GPS_PROVIDER` / `SAMSARA_API_TOKEN` | only if you use Samsara |
 
 Then click **Run NPM Install**, and **Restart**.
 
@@ -61,8 +65,9 @@ cookie is marked `Secure`, so sign-in only works over HTTPS. Also force HTTPS re
 
 ## 5. First sign-in
 
-Starter accounts (password = your `DEMO_PASSWORD`): `dispatch1`, `dispatch2`, `supervisor`, `viewer`.
-Change each password from the user menu, or manage accounts from the cPanel **Terminal**:
+Starter accounts (password = your `DEMO_PASSWORD`): `dispatch1`, `dispatch2`, `supervisor`, `viewer`, and the crew
+accounts `medic12` and `bls3` (open the site on a phone to get the crew screen).
+Supervisors can add, disable and reset users from **Menu → Users**. You can also manage accounts from the cPanel **Terminal**:
 
 ```bash
 source /home/USERNAME/nodevenv/reactsolutions-dispatch/20/bin/activate   # path shown at the top of the Node.js app page

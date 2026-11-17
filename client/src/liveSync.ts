@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ServerEvent } from '../../shared/types';
+import type { GpsPosition, ServerEvent } from '../../shared/types';
 import { api, wsUrl } from './api';
 
 export type SyncStatus = 'connecting' | 'live' | 'polling';
@@ -12,6 +12,7 @@ interface Options {
   /** Server restarted or we fell too far behind: reload the board. */
   onReset: () => void;
   onSessionEnded: () => void;
+  onGps?: (positions: GpsPosition[]) => void;
 }
 
 /**
@@ -40,9 +41,10 @@ export function useLiveSync(o: Options) {
       if (!c || catchingUp) return;
       catchingUp = true;
       try {
-        const r = await api<{ reset?: boolean; seq: number; events: ServerEvent[] }>(
+        const r = await api<{ reset?: boolean; seq: number; events: ServerEvent[]; gps?: GpsPosition[] }>(
           `changes?since=${c.seq}&boot=${encodeURIComponent(c.bootId)}`,
         );
+        if (r.gps) ref.current.onGps?.(r.gps);
         if (r.reset) ref.current.onReset();
         else if (r.events.length) ref.current.onEvents(r.events, r.seq);
       } catch {
@@ -88,6 +90,10 @@ export function useLiveSync(o: Options) {
         if (msg.type === 'hello') {
           if (c && (msg.bootId !== c.bootId || msg.seq < c.seq)) ref.current.onReset();
           else if (c && msg.seq > c.seq) catchUp();
+          return;
+        }
+        if (msg.type === 'gps') {
+          ref.current.onGps?.(msg.positions);
           return;
         }
         if (msg.type === 'presence') {

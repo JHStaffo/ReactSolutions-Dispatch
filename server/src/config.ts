@@ -22,4 +22,19 @@ export const config = {
   /** Secure cookies need HTTPS. Defaults to on in production. */
   secureCookies: process.env.SECURE_COOKIES ? process.env.SECURE_COOKIES === 'true' : isProd,
   seedSampleData: process.env.SEED_SAMPLE_DATA !== 'false',
+  gps: {
+    /** Shared secret the GPS vendor/Traccar must send (X-GPS-Key header or ?key=). Ingest is off without it. */
+    ingestKey: process.env.GPS_INGEST_KEY || '',
+    /** "samsara" turns on API polling; webhook ingest works regardless. */
+    provider: (process.env.GPS_PROVIDER || '').toLowerCase(),
+    pollSeconds: Math.max(5, Number(process.env.GPS_POLL_SECONDS || 15)),
+    simulator: process.env.GPS_SIMULATOR ? process.env.GPS_SIMULATOR === 'true' : !isProd,
+    center: (process.env.GPS_SIM_CENTER || '39.9526,-75.1652').split(',').map(Number) as [number, number],
+    /** Positions older than this are shown as stale. */
+    staleMinutes: Number(process.env.GPS_STALE_MINUTES || 5),
+  },
+  map: {
+    tileUrl: process.env.MAP_TILE_URL || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: process.env.MAP_ATTRIBUTION || '&copy; OpenStreetMap contributors',
+  },
 };

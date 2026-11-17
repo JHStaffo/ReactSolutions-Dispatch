@@ -2,7 +2,7 @@
 // All patient values in this prototype are SAMPLE data, but they are handled as PHI.
 
 export type Level = 'ALS' | 'BLS';
-export type Role = 'dispatcher' | 'supervisor' | 'viewer';
+export type Role = 'dispatcher' | 'supervisor' | 'viewer' | 'crew';
 
 export const TRIP_TYPES = {
   DIALYSIS: 'Dialysis',
@@ -75,15 +75,90 @@ export interface Crew {
   shiftEnd: string; // "HH:mm" local, may be < shiftStart for overnight
   outOfService: boolean;
   oosReason: string;
+  /** Id of the third-party GPS unit installed in this truck (as the vendor reports it). */
+  gpsDeviceId: string;
+  /** Inactive crews are kept for history but hidden from the board. */
+  active: boolean;
   version: number;
 }
 
+export interface GpsPosition {
+  deviceId: string;
+  crewId: string | null;
+  lat: number;
+  lon: number;
+  speedMph: number;
+  heading: number;
+  at: string; // fix time reported by the device
+  receivedAt: string;
+  source: string; // generic | traccar | samsara | simulator | phone
+}
+
+export interface Patient {
+  id: string;
+  patientNumber: string; // internal, e.g. P-000123; never the SSN or insurer member id
+  version: number;
+  firstName: string;
+  lastName: string;
+  dob: string;
+  sex: 'F' | 'M' | 'X' | 'U';
+  weightLbs: number;
+  phone: string;
+  address: string;
+  insurance: { payer: string; memberId: string };
+  /** Physician Certification Statement expiry (YYYY-MM-DD), null if none on file. */
+  pcsExpires: string | null;
+  priorAuth: { number: string; expires: string | null; tripsAuthorized: number | null };
+  defaultLevel: Level;
+  defaultEquipment: Equipment[];
+  stretcherReason: string; // usual medical-necessity statement
+  medicalNotes: string; // diagnoses, allergies, isolation history
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+/** Search result: enough to pick the right patient, nothing more. */
+export interface PatientSummary {
+  id: string;
+  patientNumber: string;
+  name: string; // "Last, First"
+  dob: string;
+  age: number;
+  payer: string;
+  nextTrip: string | null;
+  lastTrip: string | null;
+  alerts: string[];
+}
+
+/** Paperwork problems for a trip date: missing/expired PCS, expired prior auth. */
+export function paperworkAlerts(p: Pick<Patient, 'pcsExpires' | 'priorAuth'> | null | undefined, tripDate: Date, tripType?: TripType): string[] {
+  if (!p) return [];
+  const out: string[] = [];
+  const day = (s: string) => new Date(s + 'T23:59:59');
+  const soon = (d: Date) => d.getTime() - tripDate.getTime() < 7 * 86400000;
+  if (tripType !== 'SNF_TO_ER') {
+    if (!p.pcsExpires) out.push('No PCS');
+    else if (day(p.pcsExpires) < tripDate) out.push('PCS expired');
+    else if (soon(day(p.pcsExpires))) out.push('PCS expiring');
+  }
+  if (p.priorAuth?.number && p.priorAuth.expires) {
+    if (day(p.priorAuth.expires) < tripDate) out.push('Auth expired');
+    else if (soon(day(p.priorAuth.expires))) out.push('Auth expiring');
+  }
+  return out;
+}
+
+export const FACILITY_KINDS = ['Hospital', 'Dialysis', 'SNF', 'Clinic', 'Residence', 'Other'] as const;
 export interface Facility {
   id: string;
   name: string;
-  kind: 'Hospital' | 'Dialysis' | 'SNF' | 'Clinic' | 'Residence';
+  kind: (typeof FACILITY_KINDS)[number];
   address: string;
   phone: string;
+  lat: number | null;
+  lon: number | null;
 }
 
 export interface CallHistoryEntry {
@@ -121,6 +196,9 @@ export interface Call {
   linkedCallId: string | null;
   leg: 'ONE_WAY' | 'OUTBOUND' | 'RETURN';
   seriesId: string | null; // recurring standing orders (e.g. dialysis M/W/F)
+  patientId: string | null;
+  /** Patient-on-board miles: from GPS between Transporting and At destination, or entered by hand. */
+  loadedMiles: number | null;
   history: CallHistoryEntry[];
   createdAt: string;
   createdBy: string;
@@ -152,6 +230,10 @@ export interface CallSummary {
   leg: Call['leg'];
   linkedCallId: string | null;
   seriesId: string | null;
+  patientId: string | null;
+  loadedMiles: number | null;
+  /** Paperwork warnings, e.g. "PCS expired". */
+  alerts: string[];
   createdAt: string;
   updatedAt: string;
   updatedBy: string;
@@ -161,12 +243,27 @@ export interface SessionUser {
   username: string;
   displayName: string;
   role: Role;
+  /** For crew accounts: the unit they work on. */
+  crewId?: string | null;
+}
+
+export interface UserInfo extends SessionUser {
+  disabled: boolean;
+}
+
+export interface MapConfig {
+  tileUrl: string;
+  attribution: string;
+  center: [number, number];
+  zoom: number;
 }
 
 export type ServerEvent =
   | { seq: number; type: 'call'; action: string; actor: string; call: CallSummary }
   | { seq: number; type: 'crew'; action: string; actor: string; crew: Crew }
   | { seq: number; type: 'reset'; actor: string }
+  | { seq: number; type: 'gps'; positions: GpsPosition[] }
+  | { seq: number; type: 'facilities'; facilities: Facility[] }
   | { seq: number; type: 'presence'; users: { displayName: string; role: Role }[] };
 
 export interface AssignWarning {
@@ -180,4 +277,13 @@ export function ageFromDob(dob: string, now = new Date()): number {
   const m = now.getMonth() - d.getMonth();
   if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
   return age;
+}
+
+export function haversineMiles(a: { lat: number; lon: number }, b: { lat: number; lon: number }): number {
+  const R = 3958.8;
+  const toR = (d: number) => (d * Math.PI) / 180;
+  const dLat = toR(b.lat - a.lat);
+  const dLon = toR(b.lon - a.lon);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toR(a.lat)) * Math.cos(toR(b.lat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
 }

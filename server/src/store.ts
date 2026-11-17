@@ -1,8 +1,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Call, CallSummary, Crew, Facility, Role, ServerEvent } from '../../shared/types';
-import { ageFromDob } from '../../shared/types';
+import type { Call, CallSummary, Crew, Facility, GpsPosition, Patient, Role, ServerEvent } from '../../shared/types';
+import { ageFromDob, paperworkAlerts } from '../../shared/types';
 import { config } from './config';
 import { decryptJson, encryptJson, loadKey } from './crypto';
 import { log } from './log';
@@ -13,6 +13,7 @@ export interface StoredUser {
   role: Role;
   passwordHash: string;
   disabled: boolean;
+  crewId?: string | null;
 }
 
 export interface State {
@@ -20,13 +21,19 @@ export interface State {
   calls: Call[];
   facilities: Facility[];
   users: StoredUser[];
+  patients: Patient[];
   nextCallNumber: number;
+  nextPatientNumber: number;
+  /** Last known position per GPS device, so the map isn't empty after a restart. */
+  lastPositions: GpsPosition[];
 }
 
 type EventInput =
-  | { type: 'call'; action: string; actor: string; call: CallSummary }
+  | { type: 'call'; action: string; actor: string; call: CallSummary; prevCrewId?: string | null }
   | { type: 'crew'; action: string; actor: string; crew: Crew }
   | { type: 'reset'; actor: string }
+  | { type: 'gps'; positions: GpsPosition[] }
+  | { type: 'facilities'; facilities: Facility[] }
   | { type: 'presence'; users: { displayName: string; role: Role }[] };
 
 const EVENT_BUFFER = 1000;
@@ -59,6 +66,7 @@ class Store {
       } catch {
         throw new Error(`Cannot decrypt ${this.file}: DATA_ENCRYPTION_KEY does not match the key the data was written with, or the file was altered.`);
       }
+      migrate(this.state);
       log('info', 'Loaded encrypted data store', { calls: this.state.calls.length, crews: this.state.crews.length });
     } else {
       this.state = seed();
@@ -69,6 +77,14 @@ class Store {
 
   call(id: string) {
     return this.state.calls.find((c) => c.id === id);
+  }
+
+  patient(id: string | null | undefined) {
+    return id ? this.state.patients.find((p) => p.id === id) : undefined;
+  }
+
+  nextPatientNumber(): string {
+    return `P-${String(this.state.nextPatientNumber++).padStart(6, '0')}`;
   }
 
   crew(id: string) {
@@ -96,9 +112,10 @@ class Store {
   }
 
   emit(e: EventInput) {
-    // Presence is ephemeral: it does not advance the sequence and is not replayed.
-    const evt = { ...e, seq: e.type === 'presence' ? this.seq : ++this.seq } as ServerEvent;
-    if (evt.type !== 'presence') {
+    // Presence and GPS are ephemeral: they do not advance the sequence and are not replayed.
+    const ephemeral = e.type === 'presence' || e.type === 'gps';
+    const evt = { ...e, seq: ephemeral ? this.seq : ++this.seq } as ServerEvent;
+    if (!ephemeral) {
       this.events.push(evt);
       if (this.events.length > EVENT_BUFFER) this.events.shift();
     }
@@ -147,6 +164,16 @@ export function summarize(c: Call): CallSummary {
     leg: c.leg,
     linkedCallId: c.linkedCallId,
     seriesId: c.seriesId,
+    patientId: c.patientId,
+    loadedMiles: c.loadedMiles,
+    alerts:
+      c.status === 'COMPLETED' || c.status === 'CANCELLED'
+        ? []
+        : c.patientId
+          ? paperworkAlerts(store.patient(c.patientId), new Date(c.scheduledStart || c.pickupTime || Date.now()), c.tripType)
+          : c.pcsOnFile || c.tripType === 'SNF_TO_ER'
+            ? []
+            : ['No PCS'],
     createdAt: c.createdAt,
     updatedAt: c.updatedAt,
     updatedBy: c.updatedBy,
@@ -158,4 +185,23 @@ export function forRole(s: CallSummary, role: Role): CallSummary {
   if (role !== 'viewer') return s;
   const [last, first] = s.patientDisplay.split(', ');
   return { ...s, patientDisplay: `${(first || '').charAt(0)}${last.charAt(0)}` };
+}
+
+/** Bring a data store written by an older version up to the current shape. */
+function migrate(s: State) {
+  s.patients ||= [];
+  s.nextPatientNumber ||= 1;
+  s.lastPositions ||= [];
+  for (const c of s.crews) {
+    c.gpsDeviceId ??= '';
+    c.active ??= true;
+  }
+  for (const f of s.facilities) {
+    f.lat ??= null;
+    f.lon ??= null;
+  }
+  for (const c of s.calls) {
+    c.patientId ??= null;
+    c.loadedMiles ??= null;
+  }
 }
