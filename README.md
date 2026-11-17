@@ -122,9 +122,11 @@ sign in as `supervisor` and choose **Reset sample data** from the user menu.
 
 ## Deploy to cPanel
 
-See **[DEPLOY-CPANEL.md](DEPLOY-CPANEL.md)**. Short version: `npm run package`, upload
-`release/reactsolutions-dispatch.zip`, create a Node.js app with startup file `app.js`, set
-`NODE_ENV`, `DATA_ENCRYPTION_KEY`, `DATA_DIR`, `DEMO_PASSWORD` and `TZ`, run NPM install, restart.
+See **[DEPLOY-CPANEL.md](DEPLOY-CPANEL.md)**. Short version: a GitHub Action publishes a ready-to-run
+build to the `release` branch on every merge to `main`. On the cPanel account, clone that branch once,
+create a Node.js app with startup file `app.js` and set `NODE_ENV`, `DATA_ENCRYPTION_KEY`, `DATA_DIR`,
+`DEMO_PASSWORD` and `TZ`. After that, `~/reactsolutions-dispatch/update.sh` pulls, installs and restarts.
+`npm run release` publishes the branch by hand; `npm run package` still builds an uploadable zip.
 
 ## HIPAA safeguards
 

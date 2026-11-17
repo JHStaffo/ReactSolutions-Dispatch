@@ -19,7 +19,8 @@
     "package": "npm run build && node scripts/package.cjs",
     "test": "npm run build:server && node --test server/test/api.test.cjs",
     "genkey": "node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\"",
-    "users": "node scripts/users.cjs"
+    "users": "node scripts/users.cjs",
+    "release": "npm run package && node scripts/publish-release.cjs"
   },
   "dependencies": {
     "express": "^4.21.2",

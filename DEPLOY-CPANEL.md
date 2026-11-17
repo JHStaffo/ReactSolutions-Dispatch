@@ -4,7 +4,83 @@ This app runs as a single Node.js application under cPanel's **Setup Node.js App
 (Phusion Passenger, or LiteSpeed on some hosts). It has no native modules and no database server:
 data lives in one encrypted file.
 
-## 1. Build the bundle (on your own computer)
+## Deploy with git (recommended)
+
+The repository has a `release` branch that holds a ready-to-run build: compiled code, a runtime
+`package.json` and lockfile, and an `update.sh` script. No source or build tools go to the server.
+A GitHub Action rebuilds, tests and republishes that branch on every merge to `main`
+(you can also run it by hand from the Actions tab, or run `npm run release` on your own computer).
+
+### First install (cPanel Terminal or SSH)
+
+1. Give the account read-only access to the private repository with a deploy key:
+
+   ```bash
+   ssh-keygen -t ed25519 -f ~/.ssh/dispatch_deploy -N "" -C "cpanel-dispatch"
+   cat ~/.ssh/dispatch_deploy.pub
+   ```
+
+   On GitHub: repository **Settings → Deploy keys → Add deploy key**, paste the key, leave
+   **Allow write access** unchecked. Then tell ssh to use it:
+
+   ```bash
+   cat >> ~/.ssh/config <<'EOF'
+   Host github-dispatch
+     HostName github.com
+     User git
+     IdentityFile ~/.ssh/dispatch_deploy
+     IdentitiesOnly yes
+   EOF
+   chmod 600 ~/.ssh/config
+   ```
+
+2. Clone the release branch into your home directory (not inside `public_html`), and make a data folder:
+
+   ```bash
+   git clone --branch release --single-branch github-dispatch:JHStaffo/ReactSolutions-Dispatch.git ~/reactsolutions-dispatch
+   mkdir -m 700 ~/dispatch-data
+   ```
+
+3. Create the Node.js application and its environment variables as in **step 3** below, with
+   Application root `reactsolutions-dispatch` and `DATA_DIR` set to `/home/USERNAME/dispatch-data`.
+   Then turn on HTTPS (**step 4**).
+
+4. Install and start:
+
+   ```bash
+   ~/reactsolutions-dispatch/update.sh
+   ```
+
+### Updating
+
+After a change is merged and the **Publish release branch** action finishes:
+
+```bash
+~/reactsolutions-dispatch/update.sh
+```
+
+It pulls the new release, installs any changed dependencies inside the Node.js app's environment,
+and restarts the app. Data in `DATA_DIR` and your environment variables are untouched.
+`cat ~/reactsolutions-dispatch/RELEASE.txt` shows which commit is running.
+
+To roll back, pick an earlier release and restart:
+
+```bash
+cd ~/reactsolutions-dispatch
+git log --oneline -10
+git reset --hard <commit> && touch tmp/restart.txt
+```
+
+The next `update.sh` moves forward to the latest release again.
+
+> Keep `DATA_DIR` outside the app folder so deploys can never touch it. Never commit
+> `DATA_ENCRYPTION_KEY` or a `.env` file; set them in the Node.js app screen.
+
+## Or: upload a zip
+
+Use this if the account has no Terminal or SSH access.
+
+### 1. Build the bundle (on your own computer)
 
 You need Node.js 18.18 or newer.
 
@@ -16,11 +92,10 @@ npm run package
 This creates `release/reactsolutions-dispatch.zip` containing only compiled code and a small
 `package.json` with the three runtime dependencies (express, ws, zod).
 
-> Prefer building on the server? Clone the repo with cPanel **Git Version Control**, then in the
-> Node.js app screen click **Run NPM Install** and use **Run JS script → build**. Shared hosts often
-> limit memory, so building locally is more reliable.
+You can also download this zip from any release: on GitHub, switch to the `release` branch and use
+**Code → Download ZIP**.
 
-## 2. Upload
+### 2. Upload
 
 1. In **File Manager**, upload the zip to your home directory (not inside `public_html`) and **Extract** it.
    You now have `~/reactsolutions-dispatch/`.
