@@ -116,6 +116,16 @@ You can also download this zip from any release: on GitHub, switch to the `relea
 
 ## 3. Create the Node.js application
 
+> **No environment variables screen?** Put the settings in a private file instead. The app reads
+> `~/dispatch.env` (one `NAME=value` per line) at startup:
+>
+> ```bash
+> nano ~/dispatch.env      # NODE_ENV=production, DATA_ENCRYPTION_KEY=..., DATA_DIR=..., DEMO_PASSWORD=..., TZ=...
+> chmod 600 ~/dispatch.env
+> ```
+>
+> Keep it in your home folder, never in `public_html` or the app folder. Variables set in cPanel win over the file.
+
 > On standard cPanel (no CloudLinux) this screen is **Application Manager → Register Application**
 > instead: Application path `reactsolutions-dispatch`, Base application URL `/`, Deployment environment
 > Production, and the same environment variables. If neither screen exists, a server admin adds
