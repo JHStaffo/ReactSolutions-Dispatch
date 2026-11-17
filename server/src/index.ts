@@ -12,6 +12,14 @@ import { api } from './routes';
 import { seedState } from './seed';
 import { store } from './store';
 
+// Patient data must never sit where the web server could serve it as a plain file.
+const WEB_ROOTS = /[\\/](public_html|www|htdocs|httpdocs)([\\/]|$)/i;
+if (WEB_ROOTS.test(config.dataDir)) {
+  const msg = `DATA_DIR (${config.dataDir}) is inside a public web folder. Set DATA_DIR to a folder outside it, e.g. ~/dispatch-data.`;
+  if (config.isProd) throw new Error(msg);
+  log('warn', msg);
+}
+
 store.init(() => {
   if (config.isProd && !process.env.DEMO_PASSWORD) {
     throw new Error('Set DEMO_PASSWORD (the initial password for the starter accounts) before the first start in production.');

@@ -51,9 +51,14 @@ before(async () => {
   }
 });
 
-after(() => {
-  proc.kill();
-  fs.rmSync(dataDir, { recursive: true, force: true });
+after(async () => {
+  // Wait for the server to exit so it is not still saving into the folder we delete.
+  await new Promise((r) => {
+    if (proc.exitCode !== null) return r();
+    proc.once('exit', r);
+    proc.kill();
+  });
+  fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test('rejects bad passwords and unauthenticated access', async () => {
