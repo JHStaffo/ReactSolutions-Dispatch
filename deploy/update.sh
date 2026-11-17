@@ -14,16 +14,22 @@ git pull --ff-only --quiet
 after="$(git rev-parse --short HEAD)"
 if [ "$before" = "$after" ]; then echo "    Already up to date ($after)"; else echo "    $before -> $after"; fi
 
-# Use the Node.js version selected in cPanel "Setup Node.js App" (its virtual environment).
+# Find Node.js: the app's environment from "Setup Node.js App" (CloudLinux), or cPanel's
+# EasyApache Node.js used by "Application Manager", or whatever node is already on PATH.
 ACTIVATE="$(ls -d "$HOME/nodevenv/$REL"/*/bin/activate 2>/dev/null | sort -V | tail -n 1 || true)"
+EA_NODE="$(ls -d /opt/cpanel/ea-nodejs*/bin 2>/dev/null | sort -V | tail -n 1 || true)"
 if [ -n "$ACTIVATE" ]; then
   # shellcheck disable=SC1090
   set +u; source "$ACTIVATE"; set -u
-  echo "==> Using $(node -v) from $(dirname "$(dirname "$ACTIVATE")")"
+  echo "==> Using $(node -v) from Setup Node.js App"
+elif [ -n "$EA_NODE" ]; then
+  export PATH="$EA_NODE:$PATH"
+  echo "==> Using $(node -v) from $EA_NODE"
+elif command -v npm >/dev/null 2>&1; then
+  echo "==> Using $(node -v) from PATH"
 else
-  echo "!!  No Node.js app found for $REL."
-  echo "    Create it first in cPanel > Setup Node.js App (Application root: $REL, startup file: app.js),"
-  echo "    then run this script again."
+  echo "!!  Node.js not found. Create the app in cPanel (Setup Node.js App or Application Manager)"
+  echo "    with application root $REL and startup file app.js, then run this script again."
   exit 1
 fi
 

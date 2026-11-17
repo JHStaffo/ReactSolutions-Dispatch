@@ -116,6 +116,11 @@ You can also download this zip from any release: on GitHub, switch to the `relea
 
 ## 3. Create the Node.js application
 
+> On standard cPanel (no CloudLinux) this screen is **Application Manager → Register Application**
+> instead: Application path `reactsolutions-dispatch`, Base application URL `/`, Deployment environment
+> Production, and the same environment variables. If neither screen exists, a server admin adds
+> **ea-nodejs20** and **mod_passenger** in WHM → EasyApache 4.
+
 cPanel → **Setup Node.js App** → **Create Application**:
 
 | Field | Value |
