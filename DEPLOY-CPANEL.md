@@ -51,6 +51,19 @@ A GitHub Action rebuilds, tests and republishes that branch on every merge to `m
    ~/reactsolutions-dispatch/update.sh
    ```
 
+### Serving the app at your main domain (public_html)
+
+To have the app answer at the domain whose folder is `public_html`, keep the code in
+`~/reactsolutions-dispatch` and point the app's **Application URL** at that domain. cPanel then writes a
+small routing block into `public_html/.htaccess` and every request goes to the app. Nothing else needs
+to be in `public_html`.
+
+- Move any old site files out of `public_html` first (keep `.htaccess`). Apache can still serve a
+  leftover `index.html` or `index.php` instead of the app.
+- Don't clone the code into `public_html` itself. Everything there can be fetched as a plain file,
+  including `.git` history and server code.
+- `DATA_DIR` must be outside `public_html`. In production the app refuses to start if it isn't.
+
 ### Updating
 
 After a change is merged and the **Publish release branch** action finishes:

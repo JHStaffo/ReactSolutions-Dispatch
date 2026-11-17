@@ -16,6 +16,14 @@ const patients_1 = require("./patients");
 const routes_1 = require("./routes");
 const seed_1 = require("./seed");
 const store_1 = require("./store");
+// Patient data must never sit where the web server could serve it as a plain file.
+const WEB_ROOTS = /[\\/](public_html|www|htdocs|httpdocs)([\\/]|$)/i;
+if (WEB_ROOTS.test(config_1.config.dataDir)) {
+    const msg = `DATA_DIR (${config_1.config.dataDir}) is inside a public web folder. Set DATA_DIR to a folder outside it, e.g. ~/dispatch-data.`;
+    if (config_1.config.isProd)
+        throw new Error(msg);
+    (0, log_1.log)('warn', msg);
+}
 store_1.store.init(() => {
     if (config_1.config.isProd && !process.env.DEMO_PASSWORD) {
         throw new Error('Set DEMO_PASSWORD (the initial password for the starter accounts) before the first start in production.');
