@@ -47,7 +47,7 @@ cd ~
 git clone git@github-drawbox:JHStaffo/drawbox.git pulse
 cd pulse
 git remote set-url --push origin no-pushing-from-this-server
-git checkout -b trips-trial e0d69aa
+git checkout -b trips-trial 9acfd47
 
 # The patch comes from the dispatch repo that's already on this server.
 git -C ~/reactsolutions-dispatch fetch origin pulse-module
@@ -131,7 +131,7 @@ If the code email doesn't arrive, the server can't send mail yet. You can still 
 ## Updating after a new patch
 ```sh
 cd ~/pulse
-git checkout -B trips-trial e0d69aa
+git checkout -B trips-trial 9acfd47
 git -C ~/reactsolutions-dispatch fetch origin pulse-module
 git -C ~/reactsolutions-dispatch show FETCH_HEAD:pulse/trips-module.patch > ~/trips-module.patch
 git -c user.name="Pulse trial" -c user.email="trial@reactsolutions.com" am ~/trips-module.patch
