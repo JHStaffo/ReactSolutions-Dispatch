@@ -17,23 +17,50 @@ class Patient extends Model
 
     protected $guarded = [];
 
+    /** Encrypted at rest. */
+    public const ENCRYPTED = [
+        'first_name', 'middle_name', 'last_name', 'dob', 'phone', 'email', 'address', 'address2', 'city', 'zip', 'mrn', 'employer',
+        'nok_name', 'nok_phone', 'stretcher_reason', 'medical_notes', 'dispatch_notes', 'baseline',
+    ];
+
+    public const MARITAL = ['single' => 'Single', 'married' => 'Married', 'partner' => 'Domestic partner', 'divorced' => 'Divorced', 'widowed' => 'Widowed', 'other' => 'Other'];
+
     /** Never in JSON or arrays unless a page asks for them on purpose. */
-    protected $hidden = ['first_name', 'last_name', 'dob', 'phone', 'address', 'member_id', 'stretcher_reason', 'medical_notes'];
+    protected $hidden = self::ENCRYPTED;
 
     protected function casts(): array
     {
-        return [
-            'first_name' => 'encrypted', 'last_name' => 'encrypted', 'dob' => 'encrypted',
-            'phone' => 'encrypted', 'address' => 'encrypted', 'member_id' => 'encrypted',
-            'stretcher_reason' => 'encrypted', 'medical_notes' => 'encrypted',
-            'pcs_expires' => 'date', 'prior_auth_expires' => 'date',
-            'default_equipment' => 'array', 'active' => 'boolean',
+        return array_fill_keys(self::ENCRYPTED, 'encrypted') + [
+            'pcs_expires' => 'date', 'prior_auth_expires' => 'date', 'deceased_on' => 'date',
+            'default_equipment' => 'array', 'active' => 'boolean', 'reminders_opt_out' => 'boolean',
         ];
     }
 
     public function trips(): HasMany
     {
         return $this->hasMany(Trip::class);
+    }
+
+    /** Payors in billing order. */
+    public function payers(): HasMany
+    {
+        return $this->hasMany(PatientPayer::class, 'patient_id')->orderBy('position');
+    }
+
+    public function facility(): BelongsTo
+    {
+        return $this->belongsTo(Facility::class, 'facility_id');
+    }
+
+    public function primaryPayer(): ?PatientPayer
+    {
+        return $this->payers->first();
+    }
+
+    /** Street, city, state and zip on one line. */
+    public function fullAddress(): string
+    {
+        return collect([$this->address, $this->address2, trim(collect([$this->city, trim("{$this->state} {$this->zip}")])->filter()->join(', '))])->filter()->join(', ');
     }
 
     public function updater(): BelongsTo
@@ -43,7 +70,7 @@ class Patient extends Model
 
     public function fullName(): string
     {
-        return "{$this->last_name}, {$this->first_name}";
+        return "{$this->last_name}".($this->suffix ? " {$this->suffix}" : '').", {$this->first_name}".($this->middle_name ? ' '.mb_substr($this->middle_name, 0, 1).'.' : '');
     }
 
     public function age(): ?int

@@ -12,7 +12,7 @@ use App\Trips\Trips;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 
-/** Trip reports (no patient details), the billing export (PHI, audited) and printable run sheets (PHI, audited). */
+/** Trip reports (no patient details) and printable run sheets (PHI, audited). */
 class ReportController extends Controller
 {
     public function __construct(private Reports $reports) {}
@@ -33,15 +33,6 @@ class ReportController extends Controller
         $r = $this->reports->summary($from, $to->copy()->addDay());
 
         return Reports::csv($this->reports->summaryRows($r, $from->toDateString().' to '.$to->toDateString()), 'trip-report-'.$from->toDateString().'-to-'.$to->toDateString().'.csv');
-    }
-
-    public function billing(Request $request)
-    {
-        [$from, $to] = $this->range($request);
-        $rows = $this->reports->billingRows($from, $to->copy()->addDay());
-        audit_note('Billing export (patient information): '.(count($rows) - 1).' completed trips, '.$from->toDateString().' to '.$to->toDateString().'.');
-
-        return Reports::csv($rows, 'trip-billing-'.$from->toDateString().'-to-'.$to->toDateString().'.csv');
     }
 
     /** One truck's trips for a day, to print. Printing patient details is audited. */

@@ -85,8 +85,11 @@
         return state.filter.split(/\s+/).every(function (w) { return hay.indexOf(w) >= 0; });
     }
 
+    // Scheduled: past the pickup time plus the late minutes. ASAP: past the time quoted to the caller.
     function isLate(t, now) {
-        if (['queued', 'assigned'].indexOf(t.status) < 0 || t.pickupMode !== 'scheduled' || !t.pickupTime) return false;
+        if (['queued', 'assigned'].indexOf(t.status) < 0) return false;
+        if (t.pickupMode === 'asap') return !!t.quotedTime && now > new Date(t.quotedTime).getTime();
+        if (t.pickupMode !== 'scheduled' || !t.pickupTime) return false;
         return now - new Date(t.pickupTime).getTime() > S.lateMinutes * 60000;
     }
 
@@ -150,11 +153,11 @@
     }
 
     function queueCard(t, now) {
-        var when = t.pickupMode === 'asap' ? '<span class="trip-red">ASAP · waiting ' + minsAgo(t.pickupTime || t.createdAt) + ' min</span>'
+        var when = t.pickupMode === 'asap' ? '<span class="trip-red">ASAP · waiting ' + minsAgo(t.pickupTime || t.createdAt) + ' min' + (t.quotedTime ? ' · quoted by ' + hm(d(t.quotedTime)) : '') + '</span>'
             : t.pickupMode === 'will_call' ? '<span class="trip-amber">Will-call (waiting for the ready call)</span>'
                 : 'Pickup ' + (sameDay(d(t.pickupTime), new Date()) ? hm(d(t.pickupTime)) : d(t.pickupTime).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }));
         return '<div class="trip-card trip-q ' + (isAls(t.level) ? 'trip-als' : 'trip-bls') + (isLate(t, now) ? ' trip-late' : '') + '" draggable="' + (can.dispatch ? 'true' : 'false') + '" data-trip="' + t.id + '">'
-            + '<div class="trip-card-top"><span class="trip-lvl trip-lvl-' + esc(t.level) + '">' + esc(level(t.level)) + '</span> <b>' + esc(t.number) + '</b><span class="trip-ttype">' + esc(C.types[t.tripType] || '') + (t.leg === 'return' ? ' · return' : '') + '</span></div>'
+            + '<div class="trip-card-top"><span class="trip-lvl trip-lvl-' + esc(t.level) + '">' + esc(level(t.level)) + '</span> <b>' + esc(t.number) + '</b><span class="trip-ttype">' + (t.priority && t.priority !== 'routine' ? '<b class="trip-red">' + esc(C.priorities[t.priority]) + '</b> · ' : '') + esc(C.types[t.tripType] || '') + (t.leg === 'return' ? ' · return' : '') + '</span></div>'
             + '<div class="trip-pt">' + esc(t.patientName) + (t.age != null ? ' · ' + t.age + 'y' : '') + (t.weightLbs ? ' · ' + t.weightLbs + ' lb' : '') + '</div>'
             + '<div class="trip-route">' + esc(t.pickupLocation) + ' → ' + esc(t.destination) + '</div>'
             + '<div class="trip-card-foot">' + when + '<span>' + t.durationMin + 'm</span></div>'
@@ -162,7 +165,11 @@
     }
 
     function chips(t) {
-        var out = (t.equipment || []).map(function (e) { return '<span class="trip-chip">' + esc(C.equipment[e] || e) + '</span>'; });
+        var out = (t.equipment || []).map(function (e) { return '<span class="trip-chip">' + esc(C.equipment[e] || e) + (e === 'oxygen' && t.oxygenLpm ? ' ' + t.oxygenLpm + ' LPM' : '') + '</span>'; });
+        if (t.dnr) out.unshift('<span class="trip-chip trip-chip-warn">DNR</span>');
+        if (t.stairs) out.push('<span class="trip-chip">' + t.stairs + ' flight' + (t.stairs > 1 ? 's' : '') + ' of stairs</span>');
+        if (t.riders) out.push('<span class="trip-chip">' + t.riders + ' rider' + (t.riders > 1 ? 's' : '') + '</span>');
+        if (t.waitAndReturn) out.push('<span class="trip-chip">Wait and return</span>');
         (t.alerts || []).forEach(function (a) { out.push('<span class="trip-chip trip-chip-warn">' + esc(a) + '</span>'); });
         return out.length ? '<div class="trip-chips">' + out.join('') + '</div>' : '';
     }
@@ -214,6 +221,7 @@
                 + '<div class="trip-muted">' + (shift ? 'Shift ' + shift : 'No shift') + ' · ' + count + ' trip' + (count === 1 ? '' : 's') + '</div>'
                 + '<div>' + gpsLine(u) + '</div>'
                 + (u.outOfService ? '<div class="trip-red">Out of service: ' + esc(u.outOfService) + '</div>' : '')
+                + (u.unitStatus ? '<div class="' + (u.unitStatus === 'available' ? 'trip-green' : u.unitStatus === 'out_of_service' ? 'trip-red' : 'trip-amber') + '">MDT: ' + esc(C.unitStatuses[u.unitStatus] || u.unitStatus) + '</div>' : '')
                 + (can.dispatch ? '<a class="trip-small" target="_blank" href="' + T.urls.runSheet + '/' + u.id + '?day=' + state.day + '">Run sheet</a>' : '')
                 + '</div>';
         }).join('');
@@ -377,7 +385,7 @@
     }
 
     function pick(full) {
-        var keys = ['id', 'number', 'version', 'patientId', 'patientName', 'age', 'weightLbs', 'level', 'tripType', 'equipment', 'pickupMode', 'pickupTime', 'durationMin', 'pickupLocation', 'pickupFacilityId', 'destination', 'destinationFacilityId', 'status', 'vehicleId', 'scheduledStart', 'leg', 'linkedTripId', 'cancelReason', 'loadedMiles', 'statusTimes', 'alerts', 'payer', 'createdAt'];
+        var keys = ['id', 'number', 'version', 'patientId', 'patientName', 'age', 'weightLbs', 'level', 'tripType', 'equipment', 'pickupMode', 'pickupTime', 'durationMin', 'pickupLocation', 'pickupFacilityId', 'destination', 'destinationFacilityId', 'status', 'vehicleId', 'scheduledStart', 'leg', 'linkedTripId', 'cancelReason', 'loadedMiles', 'statusTimes', 'alerts', 'payer', 'createdAt', 'priority', 'quotedTime', 'dnr', 'oxygenLpm', 'stairs', 'riders', 'waitAndReturn', 'estMiles', 'pickupDepartment', 'dropoffDepartment', 'pickupRoom', 'dropoffRoom'];
         var o = {}; keys.forEach(function (k) { o[k] = full[k]; }); return o;
     }
 
@@ -408,16 +416,29 @@
             + '<dl class="trip-dl">'
             + row('Patient', esc(t.patientLast + ', ' + t.patientFirst) + (t.patientId ? ' · <a href="' + T.urls.patients + '/' + t.patientId + '" target="_blank">Patient record</a>' : ''))
             + row('DOB', esc(t.dob) + (t.age != null ? ' (' + t.age + 'y)' : '') + (t.weightLbs ? ' · ' + t.weightLbs + ' lb' : ''))
-            + row('Insurance', esc(t.payer || '') + (t.memberId ? ' · ' + esc(t.memberId) : '') + (t.priorAuth ? ' · Auth ' + esc(t.priorAuth) : '') + ' · PCS ' + (t.pcsOnFile ? 'on file' : '<b class="trip-red">not on file</b>'))
+            + row('Patient notes', [t.patientNotes && t.patientNotes.dispatch ? '<b>Dispatch:</b> ' + esc(t.patientNotes.dispatch) : '', t.patientNotes && t.patientNotes.baseline ? '<b>Baseline:</b> ' + esc(t.patientNotes.baseline) : ''].filter(Boolean).join('<br>'))
+            + row('Insurance', esc(t.payer || 'None') + (t.memberId ? ' · ' + esc(t.memberId) : '') + (t.secondaryPayer ? '<br>Secondary: ' + esc(t.secondaryPayer) + (t.secondaryMemberId ? ' · ' + esc(t.secondaryMemberId) : '') : '') + (t.priorAuth ? '<br>Auth ' + esc(t.priorAuth) : ''))
+            + row('PCS', t.pcsOnFile ? 'On file' : (t.pcsSigned ? 'Signed' : t.pcsRequested ? 'Requested' : '<b class="trip-red">Not on file</b>'))
+            + row('Ordered by', [esc(t.orderingFacility || ''), esc([t.callerName, t.callerTitle].filter(Boolean).join(', ')), t.callerPhone ? '<a href="tel:' + esc(t.callerPhone) + '">' + esc(t.callerPhone) + '</a>' : ''].filter(Boolean).join(' · '))
+            + row('Priority', t.priority && t.priority !== 'routine' ? '<b class="trip-red">' + esc(C.priorities[t.priority]) + '</b>' : '')
+            + row('Quoted', t.quotedTime ? 'On scene by ' + esc(new Date(t.quotedTime).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })) : '')
             + row('Level', esc(level(t.level)) + ' · ' + esc(C.types[t.tripType] || '') + (t.leg !== 'one_way' ? ' · ' + esc(t.leg) + ' leg' + (t.linkedTripId ? ' (<a href="#" data-open="' + t.linkedTripId + '">other leg</a>)' : '') : '') + (t.seriesId ? ' · standing order' : ''))
             + row('Pickup', esc(t.pickupLocation) + ' · ' + (t.pickupMode === 'asap' ? 'ASAP' : t.pickupMode === 'will_call' ? 'Will-call' : esc(new Date(t.pickupTime).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }))))
-            + row('Destination', esc(t.destination))
+            + row('Pickup room', [esc(t.pickupDepartment || ''), t.pickupRoom ? 'Room ' + esc(t.pickupRoom) : '', t.pickupPhone ? '<a href="tel:' + esc(t.pickupPhone) + '">' + esc(t.pickupPhone) + '</a>' : ''].filter(Boolean).join(' · '))
+            + row('Destination', esc(t.destination) + (t.estMiles ? ' · about ' + t.estMiles + ' mi' : ''))
+            + row('Drop-off room', [esc(t.dropoffDepartment || ''), t.dropoffRoom ? 'Room ' + esc(t.dropoffRoom) : '', t.dropoffPhone ? '<a href="tel:' + esc(t.dropoffPhone) + '">' + esc(t.dropoffPhone) + '</a>' : ''].filter(Boolean).join(' · '))
             + row('Truck', t.vehicleId ? esc(unitName(t.vehicleId)) + ' at ' + hm(d(t.scheduledStart)) : 'Not assigned')
             + row('Complaint', esc(t.chiefComplaint))
             + row('Necessity', esc(t.stretcherReason))
-            + row('Equipment', (t.equipment || []).map(function (e) { return esc(C.equipment[e] || e); }).join(', ') || 'None')
+            + row('Diagnoses', (t.diagnoses || []).map(function (x, i) { return esc(x.code) + (x.description ? ' ' + esc(x.description) : '') + (i === 0 ? ' <span class="trip-muted">(primary)</span>' : ''); }).join('<br>'))
+            + row('Doctors', ['referring', 'receiving'].filter(function (r) { return t.physicians && t.physicians[r]; }).map(function (r) { var p = t.physicians[r]; return (r === 'referring' ? 'Referring: ' : 'Receiving: ') + esc(p.name) + (p.phone ? ' · ' + esc(p.phone) : '') + (p.npi ? ' · NPI ' + esc(p.npi) : ''); }).join('<br>'))
+            + row('Equipment', (t.equipment || []).map(function (e) { return esc(C.equipment[e] || e) + (e === 'oxygen' && t.oxygenLpm ? ' ' + t.oxygenLpm + ' LPM' : ''); }).join(', ') || 'None')
+            + row('Also', [t.dnr ? '<b class="trip-red">DNR</b>' : '', t.stairs ? t.stairs + ' flights of stairs' : '', t.riders ? t.riders + ' riding along' : '', t.waitAndReturn ? 'Crew waits and brings the patient back' : ''].filter(Boolean).join(' · '))
             + row('Notes', esc(t.notes || ''))
+            + row('From the crew', t.crewNotes ? '<b>' + esc(t.crewNotes) + '</b>' : '')
+            + row('Odometer', t.odometerPickup != null || t.odometerDestination != null ? 'Pickup ' + (t.odometerPickup == null ? '—' : t.odometerPickup) + ' · Destination ' + (t.odometerDestination == null ? '—' : t.odometerDestination) : '')
             + row('Cancelled', esc(t.cancelReason || ''))
+            + row('ePCR', t.vehicleId && t.status !== 'cancelled' ? (t.epcrPulledAt ? 'Pulled ' + hm(d(t.epcrPulledAt)) + ' · ' : 'Not pulled yet · ') + '<a href="' + T.urls.base + '/' + t.id + '/epcr.xml">Download file</a>' : '')
             + '</dl>'
             + '<form class="trip-edit" id="trip-edit">'
             + '<h3>Change</h3>'
@@ -425,6 +446,8 @@
             + '<label>Minutes <input type="number" name="duration_min" min="15" max="600" step="15" value="' + t.durationMin + '"></label>'
             + '<label>Pickup <select name="pickup_mode">' + [['asap', 'ASAP'], ['scheduled', 'Scheduled'], ['will_call', 'Will-call']].map(function (m) { return '<option value="' + m[0] + '"' + (m[0] === t.pickupMode ? ' selected' : '') + '>' + m[1] + '</option>'; }).join('') + '</select></label>'
             + '<label>Time <input type="datetime-local" step="900" name="pickup_time" value="' + (t.pickupTime ? localIso(new Date(t.pickupTime)) : '') + '"></label>'
+            + '<label>Priority <select name="priority">' + Object.keys(C.priorities).map(function (k) { return '<option value="' + k + '"' + (k === (t.priority || 'routine') ? ' selected' : '') + '>' + esc(C.priorities[k]) + '</option>'; }).join('') + '</select></label>'
+            + '<label>Quoted by (ASAP) <input type="datetime-local" step="900" name="quoted_time" value="' + (t.quotedTime ? localIso(new Date(t.quotedTime)) : '') + '"></label>'
             + '<label>Loaded miles <input type="number" step="0.1" min="0" name="loaded_miles" value="' + (t.loadedMiles == null ? '' : t.loadedMiles) + '"></label>'
             + '<label class="trip-check"><input type="checkbox" name="pcs_on_file" value="1"' + (t.pcsOnFile ? ' checked' : '') + '> PCS on file</label>'
             + '<label class="trip-wide">Notes <textarea name="notes" rows="2" maxlength="1000">' + esc(t.notes || '') + '</textarea></label>'
@@ -457,7 +480,8 @@
     $('trip-drawer').addEventListener('submit', function (e) {
         e.preventDefault();
         var t = state.open, f = e.target, body = { expected_version: t.version };
-        ['level', 'pickup_mode', 'notes'].forEach(function (k) { body[k] = f.elements[k].value; });
+        ['level', 'pickup_mode', 'notes', 'priority'].forEach(function (k) { body[k] = f.elements[k].value; });
+        body.quoted_time = f.elements.quoted_time.value || null;
         body.duration_min = +f.elements.duration_min.value;
         body.pickup_time = f.elements.pickup_time.value || null;
         body.loaded_miles = f.elements.loaded_miles.value === '' ? null : +f.elements.loaded_miles.value;
@@ -485,23 +509,73 @@
     var intake = $('trip-intake');
     if (intake) {
         var form = $('trip-intake-form');
-        $('trip-new').onclick = function () { resetIntake(); intake.showModal(); form.elements.patient_last.focus(); };
+        $('trip-new').onclick = function () { resetIntake(); intake.showModal(); $('trip-ordering').focus(); };
         intake.addEventListener('click', function (e) { if (e.target.hasAttribute('data-close')) intake.close(); });
         form.addEventListener('change', intakeHints);
         form.addEventListener('input', intakeHints);
+
+        // Payor: type to search the one shared list; a new one is added when the trip is booked.
+        var payerList = null;
+        TripsCombo.attach($('trip-payer'), {
+            items: function () { return payerList = payerList || api('GET', T.urls.payers); },
+            idInput: form.elements.payer_id, allowNew: true,
+            newLabel: function (t) { return 'Use "' + t + '" (new payor)'; },
+        });
+        // Ordering facility: picking one fills an empty pickup with it.
+        TripsCombo.attach($('trip-ordering'), {
+            items: function () { return Promise.resolve(state.facilities.filter(function (f) { return f.active !== false; }).map(function (f) { return { id: f.id, name: f.name, hint: C.facilityKinds ? C.facilityKinds[f.kind] : '' }; })); },
+            idInput: form.elements.ordering_facility_id,
+            onPick: function (item) {
+                if (item && !form.elements.pickup_location.value) form.elements.pickup_location.value = item.name;
+                var fac = item && state.facilities.find(function (f) { return f.id === item.id; });
+                if (fac && fac.phone && !form.elements.caller_phone.value) form.elements.caller_phone.value = fac.phone;
+                intakeHints();
+            },
+        });
+
+        // Diagnoses: rows of ICD-10 codes, searchable by code or words; the first is primary.
+        $('trip-dx-add').addEventListener('click', function () { addDx().focus(); });
+
+        // Search the patients on file as the dispatcher types in the search box...
         var searchTimer = null;
         $('trip-pt-search').addEventListener('input', function (e) {
             clearTimeout(searchTimer);
             var q = e.target.value.trim();
             if (q.length < 2) { $('trip-pt-results').innerHTML = ''; return; }
-            searchTimer = setTimeout(function () {
-                api('POST', T.urls.lookup, { q: q }).then(function (list) {
-                    $('trip-pt-results').innerHTML = list.length ? list.map(function (p) {
-                        return '<button type="button" data-pt="' + p.id + '">' + esc(p.name) + ' · ' + esc(p.dob) + ' (' + p.age + 'y) · ' + esc(p.number) + '</button>';
-                    }).join('') : '<p class="trip-muted">No match. Type the patient in below and a record is made.</p>';
-                }).catch(failed);
-            }, 300);
+            searchTimer = setTimeout(function () { lookup(q, null); }, 300);
         });
+        // ...and when they tab off the name or date of birth, so a patient on file isn't typed in twice.
+        form.querySelectorAll('[data-pt-field]').forEach(function (el) {
+            el.addEventListener('input', function () {
+                if (form.elements.patient_id.value) { form.elements.patient_id.value = ''; $('trip-pt-picked').hidden = true; }
+            });
+            el.addEventListener('change', autoLookup);
+            el.addEventListener('blur', autoLookup);
+        });
+        var lastAuto = '';
+        function autoLookup() {
+            var f = form.elements;
+            if (f.patient_id.value) return;
+            var last = f.patient_last.value.trim(), first = f.patient_first.value.trim(), dob = f.patient_dob.value;
+            if (last.length < 2 && !dob) return;
+            var q = [last, first, dob].filter(Boolean).join(' ');
+            if (q === lastAuto) return;
+            lastAuto = q;
+            lookup(q, 'tab');
+        }
+        function lookup(q, why) {
+            api('POST', T.urls.lookup, { q: q }).then(function (list) {
+                var box = $('trip-pt-results');
+                if (!list.length) {
+                    box.innerHTML = why ? '<p class="trip-muted">Not on file yet. A patient record is made when you book.</p>' : '<p class="trip-muted">No match. Type the patient in below and a record is made.</p>';
+                    return;
+                }
+                box.innerHTML = (why ? '<p class="trip-pt-head">' + (list.length === 1 ? 'This patient is on file. Pick them to fill in the record:' : list.length + ' patients on file match. Pick one, or keep typing for a new patient:') + '</p>' : '')
+                    + list.map(function (p) {
+                        return '<button type="button" data-pt="' + p.id + '">' + esc(p.name) + ' · ' + esc(p.dob) + ' (' + p.age + 'y) · ' + esc(p.number) + (p.payer ? ' · ' + esc(p.payer) : '') + '</button>';
+                    }).join('');
+            }).catch(failed);
+        }
         $('trip-pt-results').addEventListener('click', function (e) {
             var b = e.target.closest('[data-pt]'); if (!b) return;
             api('GET', T.urls.patients + '/' + b.dataset.pt + '/intake').then(fillFromPatient).catch(failed);
@@ -509,22 +583,33 @@
         form.addEventListener('submit', function (e) {
             e.preventDefault();
             $('trip-intake-error').textContent = '';
-            var f = form.elements, body = {
+            var f = form.elements, num = function (el) { return el.value === '' ? null : +el.value; }, val = function (el) { return el.value.trim() || null; };
+            var body = {
                 patient_id: f.patient_id.value ? +f.patient_id.value : null,
                 patient_first: f.patient_first.value, patient_last: f.patient_last.value, patient_dob: f.patient_dob.value,
-                weight_lbs: f.weight_lbs.value ? +f.weight_lbs.value : null, payer: f.payer.value || null, member_id: f.member_id.value || null,
-                prior_auth: f.prior_auth.value || null, pcs_on_file: f.pcs_on_file.checked,
+                weight_lbs: num(f.weight_lbs), payer_id: f.payer_id.value ? +f.payer_id.value : null, payer: val(f.payer), member_id: val(f.member_id),
+                prior_auth: val(f.prior_auth), pcs_on_file: f.pcs_on_file.checked, pcs_requested: f.pcs_requested.checked, pcs_signed: f.pcs_signed.checked,
+                ordering_facility_id: f.ordering_facility_id.value ? +f.ordering_facility_id.value : null,
+                caller_name: val(f.caller_name), caller_title: val(f.caller_title), caller_phone: val(f.caller_phone), priority: f.priority.value,
                 level: f.level.value, trip_type: f.trip_type.value,
-                equipment: checked('equipment[]'), chief_complaint: f.chief_complaint.value, stretcher_reason: f.stretcher_reason.value, notes: f.notes.value || null,
-                pickup_mode: radio('pickup_mode'), pickup_time: f.pickup_time.value || null, duration_min: +f.duration_min.value || 60,
+                equipment: checked('equipment[]'), chief_complaint: f.chief_complaint.value, stretcher_reason: f.stretcher_reason.value, notes: val(f.notes),
+                oxygen_lpm: num(f.oxygen_lpm), stairs: num(f.stairs), riders: num(f.riders), dnr: f.dnr.checked,
+                diagnoses: Array.prototype.map.call(form.querySelectorAll('[data-dx]'), function (el) { return { code: dxCode(el.value) }; }).filter(function (d) { return d.code; }),
+                physicians: { referring: doc('referring'), receiving: doc('receiving') },
+                pickup_department: val(f.pickup_department), pickup_room: val(f.pickup_room), pickup_phone: val(f.pickup_phone),
+                dropoff_department: val(f.dropoff_department), dropoff_room: val(f.dropoff_room), dropoff_phone: val(f.dropoff_phone),
+                pickup_mode: radio('pickup_mode'), pickup_time: f.pickup_time.value || null, quoted_time: f.quoted_time.value || null, duration_min: +f.duration_min.value || 60,
                 round_trip: f.round_trip.checked, return_mode: radio('return_mode'), return_time: f.return_time.value || null,
                 repeat_days: checked('repeat_days[]').map(Number), repeat_weeks: +f.repeat_weeks.value || 4,
             };
             var pf = facilityByName(f.pickup_location.value), df = facilityByName(f.destination.value);
             body.pickup_facility_id = pf ? pf.id : null; body.pickup_location = f.pickup_location.value;
             body.destination_facility_id = df ? df.id : null; body.destination = f.destination.value;
+            if (body.pickup_mode !== 'asap') body.quoted_time = null;
+            if (body.pickup_mode !== 'scheduled') body.pickup_time = null;
             if (!body.round_trip) { body.return_mode = null; body.return_time = null; }
             api('POST', T.urls.book, body).then(function (r) {
+                if (!body.payer_id && body.payer) payerList = null; // a new payor may have been added
                 r.trips.forEach(upsert); render(); intake.close();
                 toast('Booked ' + r.trips.map(function (t) { return t.number; }).join(', ') + '.', 'ok');
             }).catch(function (err) {
@@ -533,8 +618,37 @@
                 } else failed(err);
             });
         });
+        function doc(role) {
+            var o = {};
+            ['name', 'phone', 'fax', 'npi'].forEach(function (k) { o[k] = form.elements['physicians[' + role + '][' + k + ']'].value.trim(); });
+            return o;
+        }
         function checked(name) { return Array.prototype.slice.call(form.querySelectorAll('[name="' + name + '"]:checked')).map(function (x) { return x.value; }); }
         function radio(name) { var x = form.querySelector('[name="' + name + '"]:checked'); return x ? x.value : null; }
+    }
+
+    /** "N18.6 End stage renal disease" or "n18.6" -> "N18.6". */
+    function dxCode(text) { var m = String(text || '').trim().match(/^([A-Za-z][0-9][0-9A-Za-z](\.[0-9A-Za-z]{1,4})?)\b/); return m ? m[1].toUpperCase() : ''; }
+
+    function addDx(code) {
+        var rows = $('trip-dx-rows'), row = document.createElement('div');
+        row.className = 'trip-dx-row';
+        var known = code && C.icd10.find(function (d) { return d.id === code; });
+        row.innerHTML = '<input type="text" data-dx maxlength="120" placeholder="Code or words: N18.6, dialysis, CHF" aria-label="Diagnosis">'
+            + '<button type="button" class="btn btn-small btn-outline" aria-label="Remove diagnosis">×</button>';
+        rows.appendChild(row);
+        var input = row.querySelector('input');
+        input.value = code ? code + (known ? ' ' + known.hint : '') : '';
+        TripsCombo.attach(input, {
+            items: C.icd10.map(function (d) { return { id: d.id, name: d.id + ' ' + d.hint }; }), allowNew: true,
+            newLabel: function (t) { return dxCode(t) ? 'Use code ' + dxCode(t) : 'Type an ICD-10 code (letter, 2 characters, then a dot)'; },
+        });
+        row.querySelector('button').addEventListener('click', function () { row.remove(); dxLabels(); });
+        dxLabels();
+        return input;
+    }
+    function dxLabels() {
+        Array.prototype.forEach.call($('trip-dx-rows').children, function (r, i) { r.querySelector('input').placeholder = i ? 'Another diagnosis' : 'Primary: code or words (N18.6, dialysis, CHF)'; });
     }
 
     function facilityByName(name) {
@@ -545,11 +659,13 @@
     function resetIntake() {
         var form = $('trip-intake-form');
         form.reset();
-        form.elements.patient_id.value = '';
+        ['patient_id', 'payer_id', 'ordering_facility_id'].forEach(function (k) { form.elements[k].value = ''; });
         $('trip-pt-picked').hidden = true;
         $('trip-pt-results').innerHTML = '';
         $('trip-pt-search').value = '';
         $('trip-intake-error').textContent = '';
+        $('trip-dx-rows').innerHTML = '';
+        addDx();
         var next = new Date(); next.setMinutes(Math.ceil(next.getMinutes() / 15) * 15 + 60, 0, 0);
         form.elements.pickup_time.value = localIso(next);
         $('trip-facility-list').innerHTML = state.facilities.map(function (f) { return '<option value="' + esc(f.name) + '">'; }).join('');
@@ -557,19 +673,35 @@
     }
 
     function fillFromPatient(p) {
-        var f = $('trip-intake-form').elements;
+        var form = $('trip-intake-form'), f = form.elements;
         f.patient_id.value = p.id; f.patient_last.value = p.last; f.patient_first.value = p.first; f.patient_dob.value = p.dob;
-        f.weight_lbs.value = p.weightLbs || ''; f.payer.value = p.payer || ''; f.member_id.value = p.memberId || ''; f.prior_auth.value = p.priorAuth || '';
+        f.weight_lbs.value = p.weightLbs || ''; f.payer.value = p.payer || ''; f.payer_id.value = p.payerId || ''; f.member_id.value = p.memberId || ''; f.prior_auth.value = p.priorAuth || '';
         f.pcs_on_file.checked = !!(p.pcsExpires && p.pcsExpires >= ymd(new Date()));
         f.level.value = p.level || 'bls';
         f.stretcher_reason.value = p.stretcherReason || '';
         document.querySelectorAll('#trip-intake-form [name="equipment[]"]').forEach(function (c) { c.checked = (p.equipment || []).indexOf(c.value) >= 0; });
-        if (p.lastTrip) {
-            f.trip_type.value = p.lastTrip.tripType; f.chief_complaint.value = p.lastTrip.chiefComplaint || '';
-            f.pickup_location.value = p.lastTrip.pickupLocation || ''; f.destination.value = p.lastTrip.destination || ''; f.duration_min.value = p.lastTrip.durationMin || 60;
+        var lt = p.lastTrip;
+        if (lt) {
+            f.trip_type.value = lt.tripType; f.chief_complaint.value = lt.chiefComplaint || '';
+            f.pickup_location.value = lt.pickupLocation || ''; f.destination.value = lt.destination || ''; f.duration_min.value = lt.durationMin || 60;
+            f.pickup_room.value = lt.pickupRoom || ''; f.pickup_department.value = lt.pickupDepartment || '';
+            f.dropoff_room.value = lt.dropoffRoom || ''; f.dropoff_department.value = lt.dropoffDepartment || '';
+            f.oxygen_lpm.value = lt.oxygenLpm == null ? '' : lt.oxygenLpm; f.stairs.value = lt.stairs == null ? '' : lt.stairs;
+            $('trip-dx-rows').innerHTML = '';
+            (lt.diagnoses || []).forEach(function (d) { addDx(d.code); });
+            if (!(lt.diagnoses || []).length) addDx();
+        } else if (p.livesAt && !f.pickup_location.value) {
+            f.pickup_location.value = p.livesAt.name;
+        } else if (p.address && !f.pickup_location.value) {
+            f.pickup_location.value = p.address; f.pickup_phone.value = p.phone || '';
         }
-        $('trip-pt-picked').hidden = false;
-        $('trip-pt-picked').textContent = 'Booking for ' + p.last + ', ' + p.first + ' (' + p.number + '). Filled in from the record' + (p.lastTrip ? ' and their last trip' : '') + '; check everything.';
+        var picked = $('trip-pt-picked');
+        picked.hidden = false;
+        picked.innerHTML = esc('Booking for ' + p.last + ', ' + p.first + ' (' + p.number + '). Filled in from the record' + (lt ? ' and their last trip' : '') + '; check everything.')
+            + (p.deceased ? '<div class="trip-pt-notes"><strong>Date of death on file: ' + esc(p.deceased) + '.</strong></div>' : '')
+            + (p.dispatchNotes ? '<div class="trip-pt-notes"><strong>Dispatch notes:</strong> ' + esc(p.dispatchNotes) + '</div>' : '')
+            + (p.baseline ? '<div class="trip-pt-notes"><strong>Baseline:</strong> ' + esc(p.baseline) + '</div>' : '')
+            + (p.secondaryPayer ? '<div class="trip-muted">Secondary payor: ' + esc(p.secondaryPayer) + '</div>' : '');
         $('trip-pt-results').innerHTML = '';
         intakeHints();
     }
@@ -580,12 +712,23 @@
         var eq = Array.prototype.slice.call(form.querySelectorAll('[name="equipment[]"]:checked')).map(function (x) { return x.value; });
         if (!isAls(f.level.value) && eq.some(function (e) { return C.alsEquipment.indexOf(e) >= 0; })) hints.push('ALS equipment on a ' + level(f.level.value) + ' trip.');
         if (+f.weight_lbs.value >= 350 && eq.indexOf('bariatric') < 0) hints.push('Over 350 lb: does this patient need the bariatric stretcher?');
-        if (!f.pcs_on_file.checked) hints.push('No PCS on file.');
+        if (eq.indexOf('oxygen') >= 0 && !f.oxygen_lpm.value) hints.push('Oxygen: how many liters?');
+        if (f.oxygen_lpm.value && eq.indexOf('oxygen') < 0) hints.push('Liters given but oxygen isn\'t checked.');
+        if (!f.pcs_on_file.checked && !f.pcs_signed.checked) hints.push(f.pcs_requested.checked ? 'PCS requested, not signed yet.' : 'No PCS on file.');
         $('trip-intake-hints').innerHTML = hints.map(function (h) { return '<span class="trip-chip trip-chip-warn">' + esc(h) + '</span>'; }).join(' ');
         var mode = form.querySelector('[name="pickup_mode"]:checked').value;
+        form.querySelectorAll('[data-when]').forEach(function (el) { el.hidden = el.dataset.when !== mode; });
         f.pickup_time.disabled = mode !== 'scheduled';
         form.querySelector('.trip-repeat').hidden = mode !== 'scheduled';
         form.querySelector('.trip-return').hidden = !f.round_trip.checked;
+        // Rough distance between two facilities on the map (straight line plus a quarter for roads).
+        var pf = facilityByName(f.pickup_location.value), df = facilityByName(f.destination.value), est = '';
+        if (pf && df && pf.lat != null && df.lat != null && pf.id !== df.id) {
+            var r = Math.PI / 180, a = Math.sin((df.lat - pf.lat) * r / 2), b = Math.sin((df.lon - pf.lon) * r / 2);
+            var mi = 2 * 3958.8 * Math.asin(Math.sqrt(a * a + Math.cos(pf.lat * r) * Math.cos(df.lat * r) * b * b)) * 1.25;
+            est = 'About ' + mi.toFixed(1) + ' miles by road (estimate).';
+        }
+        $('trip-est').textContent = est;
     }
 
     // ------------------------------------------------------------------ live updates
@@ -609,6 +752,7 @@
             state.gps = r.gps;
             state.online = r.online;
             if (r.facilities) api('GET', T.urls.facilities).then(function (list) { state.facilities = list; });
+            if (r.units) api('GET', T.urls.data + '?day=' + state.day).then(function (b) { state.units = b.units; renderColumns(); });
             if (r.trips.length || true) render();
             if (newAsap.length) alertUser('New ASAP trip: ' + newAsap.map(tripLabel).join(', '));
             if (r.more) setTimeout(poll, 50); else setTimeout(poll, 4000);

@@ -47,7 +47,7 @@ Then, in Admin > Permission Profiles, give out the five new Dispatch permissions
 | Dispatch trips | Dispatchers |
 | My Trips | Crews (Team Members) |
 | Trip reports | Supervisors and managers |
-| Trip supervisor | Supervisors. This covers reopening closed trips, the billing export and Trip Settings. |
+| Trip supervisor | Supervisors. This covers reopening closed trips, the payor list, the ePCR feed key and Trip Settings. |
 
 Practice data: `php artisan trips:sample you@fasttrackems.com` adds made-up facilities, trucks, crews,
 patients and trips, and turns on the GPS simulator. On a production install, add `--force`.
@@ -59,8 +59,8 @@ New:
 - `app/Http/Middleware/TripsIdle.php`
 - `routes/trips.php`
 - `resources/views/trips/`
-- `public/js/trips-board.js`
-- the migration `2026_11_18_000100_create_trip_tables.php`
+- `public/js/trips-board.js` and `public/js/trips-combobox.js`
+- the migrations `2026_11_18_000100_create_trip_tables.php` and `2026_11_18_000200_add_patient_details_payers_and_intake_fields.php`
 - `tests/Feature/TripsTest.php`
 
 Shared Pulse files, each changed by a few lines:
@@ -85,21 +85,32 @@ Shared Pulse files, each changed by a few lines:
 | Patients with past and scheduled trips | Dispatch > Patients |
 | GPS from third-party units | Webhook (generic JSON or Traccar), Samsara, crew phone, simulator |
 | Closest-unit suggestions | Trip drawer, "Closest trucks" |
-| Crew mobile screen | Dispatch > My Trips |
-| Reports and CSV, billing export with loaded miles | Dispatch > Trip Reports |
+| Crew mobile screen | Dispatch > My Trips, now an MDT: truck status, rooms, diagnoses, directions, odometer, note to dispatch |
+| Reports and CSV with loaded miles | Dispatch > Trip Reports (the billing export was taken out: billing is done from the ePCR) |
 | PCS and prior-auth expiry alerts | Trip cards, patient record, board metric |
 | Run sheets | Run sheet link on each truck column |
 | Sound alerts | Board, with a mute button |
 | User management and roster editing | Pulse's Team Members, Permission Profiles and Vehicle Assignments |
 | Facility address book with map | Dispatch > Facilities and Trip Map |
 
+## Added since
+
+| What | Where |
+| --- | --- |
+| Fuller call intake: ordering facility, caller, priority, department/room/phone at both ends, ICD-10 diagnoses, O2 liters, stairs, riders, DNR, referring/receiving doctors, PCS requested/signed, wait-and-return | New trip form |
+| Patient lookup when you tab off the name or date of birth | New trip form |
+| Quoted time for ASAP trips (not a pickup time; late only after the quote) | New trip form, queue cards, reports |
+| Fuller patient record: name parts, address, contacts, next of kin, PCP, MRN, lives-at facility, baseline, dispatch notes | Dispatch > Patients |
+| Payors listed once, "+ Add payor" rows with a type-to-search box; new ones typed straight in | Patient form; Dispatch > Payors to rename, turn off or merge duplicates |
+| ePCR import from CAD (NEMSIS 3.5 element names, XML or JSON) | `GET /api/trips/epcr/trips` with the key from Trip Settings; per-trip file in the trip drawer |
+
 ## Patient information
 
 The data is sample data, but the module protects it as if it were real PHI:
 
-- **Encryption at rest.** Names, dates of birth, member ids, complaints, notes and addresses are encrypted with Pulse's `APP_KEY`.
+- **Encryption at rest.** Names, dates of birth, contact details, member ids, MRNs, complaints, diagnoses, rooms, notes and addresses are encrypted with Pulse's `APP_KEY`.
 - **Searches.** They are POSTed, so names never show up in URLs or server logs.
-- **Audit log.** It records who opened which trip or patient, and every billing export and run sheet. It identifies them by number only.
+- **Audit log.** It records who opened which trip or patient, every run sheet, and every ePCR pull and file. It identifies them by number only.
 - **Viewers.** People who can only view the board see initials, and "Residence" in place of a home address.
 - **Automatic sign-out.** Trip pages sign out after the idle minutes set in Trip Settings.
 - **Notifications.** Desktop notifications leave out patient names.
@@ -114,5 +125,7 @@ The data is sample data, but the module protects it as if it were real PHI:
 | ![Trip Reports](screenshots/reports.png) | ![Trip Settings](screenshots/settings.png) |
 | ![Run sheet](screenshots/runsheet.png) | ![Facilities](screenshots/facilities.png) |
 | ![Trip drawer](screenshots/drawer.png) | ![New trip](screenshots/intake.png) |
+| ![Tab-off patient lookup](screenshots/intake-autosearch.png) | ![Payors on a patient](screenshots/patient-payors.png) |
+| ![Payor list](screenshots/payor-list.png) | ![ePCR feed settings](screenshots/epcr-settings.png) |
 
 The map tiles are blank in these pictures only because the machine that took them had no internet access.

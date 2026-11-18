@@ -81,23 +81,45 @@ class Sample
         Setting::put('trips_gps_simulator', '1');
 
         $patients = [];
+        $payers = app(Payers::class);
+        $cities = ['Sampleton', 'Example Falls', 'Mockville'];
         foreach (self::PATIENTS as $i => [$first, $last, $dob, $sex, $lbs, $payer, $type]) {
             $existing = app(Patients::class)->findExact($first, $last, $dob);
-            $patients[] = $existing ?? Patient::create([
+            if ($existing) {
+                $patients[] = $existing;
+
+                continue;
+            }
+            $p = Patient::create([
                 'patient_number' => Patient::nextNumber(), 'first_name' => $first, 'last_name' => $last, 'dob' => $dob, 'sex' => $sex,
-                'weight_lbs' => $lbs, 'payer' => $payer, 'member_id' => 'SMP'.str_pad((string) (1000 + $i), 6, '0', STR_PAD_LEFT),
+                'middle_name' => $i % 3 === 0 ? 'Q' : null, 'marital_status' => ['widowed', 'married', 'single'][$i % 3], 'language' => $i === 4 ? 'Spanish' : 'English',
+                'weight_lbs' => $lbs, 'height_in' => 60 + ($i * 3) % 14, 'mrn' => 'MRN-SMP-'.(70000 + $i),
+                'phone' => '(555) 010-'.(2000 + $i), 'address' => (100 + $i * 7).' Sample St', 'city' => $cities[$i % 3], 'state' => 'VA', 'zip' => '0000'.$i, 'county' => 'Example',
+                'facility_id' => $type === 'dialysis' || $type === 'snf_to_er' ? $f['Oak Hollow Skilled Nursing']->id : null,
+                'nok_name' => 'Sample Relative '.($i + 1), 'nok_relationship' => ['Daughter', 'Son', 'Spouse'][$i % 3], 'nok_phone' => '(555) 010-'.(3000 + $i),
+                'pcp_name' => 'Dr. Example Physician', 'pcp_npi' => '100000000'.$i, 'pcp_phone' => '(555) 010-4100',
                 'pcs_expires' => match ($i % 4) { 0 => $today->copy()->addMonths(3), 1 => $today->copy()->addDays(4), 2 => null, default => $today->copy()->subDays(2) },
                 'prior_auth_number' => $payer === 'Sample Health PPO' ? 'AUTH-'.(5000 + $i) : null,
                 'prior_auth_expires' => $payer === 'Sample Health PPO' ? $today->copy()->addDays($i % 2 ? 3 : 40) : null,
                 'default_level' => in_array($type, ['interfacility', 'snf_to_er'], true) ? 'als' : 'bls',
                 'stretcher_reason' => 'Bed-confined; unable to sit upright for transport (sample)',
                 'medical_notes' => 'Sample record. No real patient information.',
+                'baseline' => $i % 2 ? 'Alert, oriented x3. No known allergies (sample).' : 'Baseline confusion; oriented to self only. Allergy: penicillin (sample).',
+                'dispatch_notes' => $i === 0 ? 'Use the side entrance; call the nurse station first (sample).' : null,
+                'pickup_extra_min' => $lbs > 230 ? 15 : null,
             ]);
+            // Medicare patients on Medicaid too: Medicare first, Medicaid second.
+            $rows = [['payer_name' => $payer, 'member_id' => 'SMP'.str_pad((string) (1000 + $i), 6, '0', STR_PAD_LEFT), 'group_number' => $payer === 'Sample Health PPO' ? 'GRP-'.(200 + $i) : null, 'effective_from' => '2026-01-01']];
+            if ($payer === 'Sample Medicare' && $i % 2 === 0) {
+                $rows[] = ['payer_name' => 'Example Medicaid', 'member_id' => 'SMD'.str_pad((string) (2000 + $i), 6, '0', STR_PAD_LEFT)];
+            }
+            $payers->saveForPatient($p, $rows);
+            $patients[] = $p;
         }
 
         $trips = app(Trips::class);
         $made = 0;
-        $book = function (Patient $p, string $type, string $level, string $mode, ?Carbon $time, string $from, string $to, ?Vehicle $v = null, string $status = 'queued', array $equipment = []) use ($trips, $by, $f, &$made) {
+        $book = function (Patient $p, string $type, string $level, string $mode, ?Carbon $time, string $from, string $to, ?Vehicle $v = null, string $status = 'queued', array $equipment = [], array $extra = []) use ($trips, $by, $f, &$made) {
             $t = $trips->create([
                 'patient_id' => $p->id, 'patient_first' => $p->first_name, 'patient_last' => $p->last_name, 'patient_dob' => $p->dob,
                 'level' => $level, 'trip_type' => $type, 'equipment' => $equipment, 'pcs_on_file' => (bool) $p->pcs_expires,
@@ -105,7 +127,11 @@ class Sample
                 'stretcher_reason' => $p->stretcher_reason, 'pickup_mode' => $mode, 'pickup_time' => $time?->format('Y-m-d H:i'),
                 'pickup_facility_id' => $f[$from]->id ?? null, 'pickup_location' => $from,
                 'destination_facility_id' => $f[$to]->id ?? null, 'destination' => $to, 'duration_min' => $level === 'bls' ? 60 : 90,
-            ], $by)->first();
+                'diagnoses' => [['code' => match ($type) { 'dialysis' => 'N18.6', 'snf_to_er' => 'R41.82', 'discharge' => 'Z09', 'interfacility' => 'I50.9', default => 'Z09' }]]
+                    + ($type === 'dialysis' ? [1 => ['code' => 'Z99.2']] : []),
+                'pickup_room' => str_contains($from, 'Nursing') || str_contains($from, 'Rehab') ? 'Room '.(100 + crc32($p->last_name) % 80) : null,
+                'oxygen_lpm' => in_array('oxygen', $equipment, true) ? 2 : null,
+            ] + $extra, $by)->first();
             if ($v) {
                 $t->forceFill(['vehicle_id' => $v->id, 'scheduled_start' => $time ?? now(), 'status' => $status, 'status_times' => $this->times($time ?? now(), $status)])->save();
                 if ($status === 'completed') {
@@ -140,11 +166,15 @@ class Sample
         $book($patients[5], 'interfacility', 'als', 'scheduled', $hour(9), 'Lakeview Regional Medical Center', 'St. Example General Hospital', $trucks['Medic 12'], 'assigned', ['cardiac_monitor', 'iv_pump']);
         $book($patients[0], 'dialysis', 'bls', 'scheduled', $hour(11), 'Riverside Dialysis Center', 'Oak Hollow Skilled Nursing', $trucks['BLS 3'], 'assigned', ['oxygen']);
         $book($patients[8], 'dialysis', 'bls', 'scheduled', $hour(10, 30), 'Oak Hollow Skilled Nursing', 'Northgate Kidney Care', $trucks['BLS 7'], 'assigned');
-        $book($patients[1], 'snf_to_er', 'als', 'asap', null, 'Oak Hollow Skilled Nursing', 'Lakeview Regional Medical Center', null, 'queued', ['oxygen', 'cardiac_monitor']);
-        $book($patients[2], 'discharge', 'bls', 'asap', null, 'Lakeview Regional Medical Center', 'Sample residence, 45 Example Blvd', null, 'queued', ['bariatric', 'stair_chair']);
+        $book($patients[1], 'snf_to_er', 'als', 'asap', null, 'Oak Hollow Skilled Nursing', 'Lakeview Regional Medical Center', null, 'queued', ['oxygen', 'cardiac_monitor'],
+            ['priority' => 'urgent', 'quoted_time' => $now->copy()->addMinutes(40)->format('Y-m-d H:i'), 'caller_name' => 'Sample Nurse', 'caller_title' => 'RN', 'caller_phone' => '(555) 010-4006', 'ordering_facility_id' => $f['Oak Hollow Skilled Nursing']->id, 'dropoff_department' => 'Emergency']);
+        $book($patients[2], 'discharge', 'bls', 'asap', null, 'Lakeview Regional Medical Center', 'Sample residence, 45 Example Blvd', null, 'queued', ['bariatric', 'stair_chair'],
+            ['quoted_time' => $now->copy()->addHours(3)->format('Y-m-d H:i'), 'pickup_department' => '4 West', 'pickup_room' => '412-B', 'stairs' => 1, 'riders' => 1, 'caller_name' => 'Sample Case Manager', 'caller_title' => 'Case manager', 'ordering_facility_id' => $f['Lakeview Regional Medical Center']->id]);
         $book($patients[3], 'doctor', 'bls', 'scheduled', $hour(13), 'Maple Gardens Rehab & SNF', 'Summit Cardiology Clinic', null, 'queued', ['oxygen']);
         $book($patients[4], 'doctor', 'bls', 'scheduled', $hour(14, 30), 'Sample residence, 88 Example Ave', 'Valley Imaging');
-        $book($patients[7], 'interfacility', 'als', 'scheduled', $hour(15), 'St. Example General Hospital', 'Lakeview Regional Medical Center', null, 'queued', ['ventilator', 'cardiac_monitor', 'suction']);
+        $book($patients[7], 'interfacility', 'als', 'scheduled', $hour(15), 'St. Example General Hospital', 'Lakeview Regional Medical Center', null, 'queued', ['ventilator', 'cardiac_monitor', 'suction'],
+            ['priority' => 'urgent', 'pickup_department' => 'ICU', 'pickup_room' => 'ICU 6', 'dropoff_department' => 'Cardiac ICU', 'dnr' => true, 'pcs_requested' => true,
+                'physicians' => ['referring' => ['name' => 'Dr. Sample Sender', 'phone' => '(555) 010-4500', 'npi' => '1234567893'], 'receiving' => ['name' => 'Dr. Example Receiver', 'phone' => '(555) 010-4600']]]);
 
         // Upcoming dialysis (a standing order for next week).
         $trips->create([

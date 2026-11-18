@@ -17,9 +17,6 @@
             <div class="field"><button type="submit" class="btn">Show</button></div>
             <div class="field">
                 <a class="btn btn-outline" href="{{ route('trips.reports.csv') }}{{ $qs }}">Download CSV</a>
-                @if (auth()->user()->hasPermission('trips_supervise'))
-                    <a class="btn btn-outline" href="{{ route('trips.reports.billing') }}{{ $qs }}" title="Completed trips with patient names, insurance and loaded miles. Each download is logged.">Billing export (patient info)</a>
-                @endif
             </div>
         </form>
     </div>
@@ -31,6 +28,7 @@
         <div class="tr-kpi"><b>{{ $r['open'] }}</b>Still open</div>
         <div class="tr-kpi"><b>{{ $r['onTimePct'] === null ? '—' : $r['onTimePct'].'%' }}</b>On-time pickups <span class="hint">({{ $r['onTimeBase'] }} scheduled, within {{ $r['lateMinutes'] }} min)</span></div>
         <div class="tr-kpi"><b>{{ $r['asapAvgMin'] === null ? '—' : $r['asapAvgMin'].' min' }}</b>ASAP booked to on scene</div>
+        <div class="tr-kpi"><b>{{ $r['quotedPct'] === null ? '—' : $r['quotedPct'].'%' }}</b>ASAP on scene by the quoted time <span class="hint">({{ $r['quotedBase'] }} quoted)</span></div>
         <div class="tr-kpi"><b>{{ $r['loadedMiles'] }}</b>Loaded miles</div>
     </div>
 

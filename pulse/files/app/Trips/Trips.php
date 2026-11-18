@@ -81,6 +81,8 @@ class Trips
             'shifts' => $shifts,
             'onRoad' => $onRoad,
             'outOfService' => $down->has($v->id) ? ($down[$v->id]['reason'] ?: 'Out of service') : null,
+            // What the crew set on the MDT (today only).
+            'unitStatus' => $v->trip_unit_status_at && \Illuminate\Support\Carbon::parse($v->trip_unit_status_at)->isToday() ? $v->trip_unit_status : null,
         ];
     }
 
@@ -134,13 +136,25 @@ class Trips
             'alerts' => $this->alerts($t),
             'payer' => $full ? $t->payer : null,
             'createdAt' => $t->created_at?->toIso8601String(),
+            'priority' => $t->priority ?? 'routine',
+            'quotedTime' => $t->quoted_time?->toIso8601String(),
+            'dnr' => (bool) $t->dnr,
+            'oxygenLpm' => $t->oxygen_lpm,
+            'stairs' => $t->stairs,
+            'riders' => $t->riders,
+            'waitAndReturn' => (bool) $t->wait_and_return,
+            'estMiles' => $t->est_miles,
+            'pickupDepartment' => $t->pickup_department,
+            'dropoffDepartment' => $t->dropoff_department,
+            'pickupRoom' => $full ? $t->pickup_room : null,
+            'dropoffRoom' => $full ? $t->dropoff_room : null,
         ];
     }
 
     /** Everything about a trip, for the trip drawer (dispatchers only; the caller audits the view). */
     public function detail(Trip $t, User $viewer): array
     {
-        $t->loadMissing('history', 'updater');
+        $t->loadMissing('history', 'updater', 'patient', 'orderingFacility');
 
         return $this->summary($t, $viewer) + [
             'patientFirst' => $t->patient_first,
@@ -153,6 +167,18 @@ class Trips
             'stretcherReason' => $t->stretcher_reason,
             'notes' => $t->notes,
             'seriesId' => $t->series_id,
+            'secondaryPayer' => $t->secondary_payer,
+            'secondaryMemberId' => $t->secondary_member_id,
+            'pcsRequested' => (bool) $t->pcs_requested,
+            'pcsSigned' => (bool) $t->pcs_signed,
+            'orderingFacility' => $t->orderingFacility?->name,
+            'callerName' => $t->caller_name, 'callerTitle' => $t->caller_title, 'callerPhone' => $t->caller_phone,
+            'pickupPhone' => $t->pickup_phone, 'dropoffPhone' => $t->dropoff_phone,
+            'diagnoses' => $t->diagnoses ?? [],
+            'physicians' => $t->physicians ?? (object) [],
+            'crewNotes' => $t->crew_notes, 'epcrPulledAt' => $t->epcr_pulled_at?->toIso8601String(),
+            'odometerPickup' => $t->odometer_pickup, 'odometerDestination' => $t->odometer_destination,
+            'patientNotes' => $t->patient ? array_filter(['dispatch' => $t->patient->dispatch_notes, 'baseline' => $t->patient->baseline]) : (object) [],
             'updatedBy' => $t->updater?->name,
             'updatedAt' => $t->updated_at?->toIso8601String(),
             'history' => $t->history->map(fn (TripHistory $h) => [
@@ -206,15 +232,17 @@ class Trips
                 $out = $this->newTrip($base, $in, $date, $by, $series);
                 $made->push($out);
                 if (! empty($in['round_trip'])) {
+                    $timing = $this->returnTiming($in, $out);
+                    $wait = ! empty($timing['wait_and_return']);
                     $back = $this->newTrip(array_merge($base, [
                         'pickup_location' => $base['destination'], 'pickup_facility_id' => $base['destination_facility_id'],
                         'destination' => $base['pickup_location'], 'destination_facility_id' => $base['pickup_facility_id'],
-                    ]), [
-                        'pickup_mode' => $in['return_mode'] ?? 'will_call',
-                        'pickup_time' => ($in['return_mode'] ?? 'will_call') === 'scheduled' ? $in['return_time'] ?? null : null,
-                    ], $date, $by, $series, 'return');
-                    $out->update(['leg' => 'outbound', 'linked_trip_id' => $back->id]);
-                    $back->update(['linked_trip_id' => $out->id]);
+                        'pickup_room' => $base['dropoff_room'], 'pickup_department' => $base['dropoff_department'], 'pickup_phone' => $base['dropoff_phone'],
+                        'dropoff_room' => $base['pickup_room'], 'dropoff_department' => $base['pickup_department'], 'dropoff_phone' => $base['pickup_phone'],
+                    ]), $timing, $date, $by, $series, 'return');
+                    // Wait and return: both legs say so, so the board and the crew know the truck stays.
+                    $out->update(['leg' => 'outbound', 'linked_trip_id' => $back->id, 'wait_and_return' => $wait]);
+                    $back->update(['linked_trip_id' => $out->id, 'wait_and_return' => $wait]);
                     $made->push($back);
                 }
             }
@@ -227,32 +255,53 @@ class Trips
         });
     }
 
+    /**
+     * When the return leg is picked up: a set time, will-call, or "wait and return" (the crew waits,
+     * so it's scheduled for when the outbound leg's minutes are up).
+     */
+    private function returnTiming(array $in, Trip $out): array
+    {
+        $mode = $in['return_mode'] ?? 'will_call';
+        if ($mode === 'wait' && $out->pickup_time) {
+            $out->update(['wait_and_return' => true]);
+
+            return ['pickup_mode' => 'scheduled', 'pickup_time' => $out->pickup_time->copy()->addMinutes($out->duration_min)->format('Y-m-d H:i'), 'wait_and_return' => true];
+        }
+
+        return ['pickup_mode' => $mode === 'scheduled' ? 'scheduled' : 'will_call', 'pickup_time' => $mode === 'scheduled' ? $in['return_time'] ?? null : null];
+    }
+
     /** Uses the chosen patient record, or finds one by name and date of birth, or makes a new one. */
     private function resolvePatient(array $in, User $by): Patient
     {
         $patient = ! empty($in['patient_id']) ? Patient::findOrFail($in['patient_id']) : app(Patients::class)->findExact($in['patient_first'], $in['patient_last'], $in['patient_dob']);
+        $payers = app(Payers::class);
+        $payer = $payers->resolve(isset($in['payer_id']) ? (int) $in['payer_id'] : null, $in['payer'] ?? null);
         if (! $patient) {
+            $home = empty($in['pickup_facility_id']) ? trim((string) ($in['pickup_location'] ?? '')) : '';
             $patient = Patient::create([
                 'patient_number' => Patient::nextNumber(),
                 'first_name' => trim($in['patient_first']), 'last_name' => trim($in['patient_last']), 'dob' => $in['patient_dob'],
-                'weight_lbs' => $in['weight_lbs'] ?? null, 'payer' => $in['payer'] ?? null, 'member_id' => $in['member_id'] ?? null,
-                'prior_auth_number' => $in['prior_auth'] ?? null, 'default_level' => $in['level'], 'default_equipment' => $in['equipment'] ?? [],
+                'weight_lbs' => $in['weight_lbs'] ?? null, 'prior_auth_number' => $in['prior_auth'] ?? null,
+                'default_level' => $in['level'], 'default_equipment' => $in['equipment'] ?? [],
                 'stretcher_reason' => $in['stretcher_reason'] ?? null, 'updated_by' => $by->id,
+                // A pickup that isn't a facility is usually home.
+                'address' => $home ?: null, 'phone' => empty($in['pickup_facility_id']) ? ($in['pickup_phone'] ?? null) : null,
             ]);
             audit_note("Added patient {$patient->patient_number} from intake.");
         } else {
-            // Intake is where weight and insurance usually change: keep the record current.
-            $changes = array_filter([
-                'weight_lbs' => $in['weight_lbs'] ?? null, 'payer' => $in['payer'] ?? null,
-                'member_id' => $in['member_id'] ?? null, 'prior_auth_number' => $in['prior_auth'] ?? null,
-            ], fn ($v) => $v !== null && $v !== '');
+            // Intake is where weight and paperwork usually change: keep the record current.
+            $changes = array_filter(['weight_lbs' => $in['weight_lbs'] ?? null, 'prior_auth_number' => $in['prior_auth'] ?? null], fn ($v) => $v !== null && $v !== '');
             $dirty = array_filter($changes, fn ($v, $k) => (string) $patient->{$k} !== (string) $v, ARRAY_FILTER_USE_BOTH);
             if ($dirty) {
                 $patient->fill($dirty + ['updated_by' => $by->id, 'version' => $patient->version + 1])->save();
             }
         }
+        if ($payer) {
+            $payers->fromIntake($patient, $payer, $in['member_id'] ?? null);
+        }
 
-        return $patient;
+        return $patient->load('payers.payer');
     }
 
     private function tripFields(array $in, Patient $p): array
@@ -264,15 +313,58 @@ class Trips
             'patient_id' => $p->id,
             'patient_first' => $p->first_name, 'patient_last' => $p->last_name, 'patient_dob' => $p->dob,
             'weight_lbs' => $in['weight_lbs'] ?? $p->weight_lbs,
-            'payer' => $in['payer'] ?? $p->payer, 'member_id' => $in['member_id'] ?? $p->member_id,
+            // The payors as they are today, copied so later changes to the patient don't rewrite the trip.
+            'payer' => $p->payers->get(0)?->payer?->name, 'member_id' => $p->payers->get(0)?->member_id,
+            'secondary_payer' => $p->payers->get(1)?->payer?->name, 'secondary_member_id' => $p->payers->get(1)?->member_id,
             'prior_auth' => $in['prior_auth'] ?? $p->prior_auth_number,
             'pcs_on_file' => (bool) ($in['pcs_on_file'] ?? false),
+            'pcs_requested' => (bool) ($in['pcs_requested'] ?? false), 'pcs_signed' => (bool) ($in['pcs_signed'] ?? false),
+            'ordering_facility_id' => $in['ordering_facility_id'] ?? null,
+            'caller_name' => $in['caller_name'] ?? null, 'caller_title' => $in['caller_title'] ?? null, 'caller_phone' => $in['caller_phone'] ?? null,
+            'pickup_room' => $in['pickup_room'] ?? null, 'pickup_department' => $in['pickup_department'] ?? null, 'pickup_phone' => $in['pickup_phone'] ?? null,
+            'dropoff_room' => $in['dropoff_room'] ?? null, 'dropoff_department' => $in['dropoff_department'] ?? null, 'dropoff_phone' => $in['dropoff_phone'] ?? null,
+            'priority' => $in['priority'] ?? 'routine',
+            'quoted_time' => ($in['pickup_mode'] ?? '') === 'asap' && ! empty($in['quoted_time']) ? Carbon::parse($in['quoted_time']) : null,
+            'oxygen_lpm' => $in['oxygen_lpm'] ?? null, 'stairs' => $in['stairs'] ?? null, 'riders' => $in['riders'] ?? null, 'dnr' => (bool) ($in['dnr'] ?? false),
+            'diagnoses' => self::diagnoses($in['diagnoses'] ?? []) ?: null,
+            'physicians' => self::physicians($in['physicians'] ?? []) ?: null,
+            'est_miles' => $pickupFacility?->lat !== null && $destFacility?->lat !== null && $pickupFacility && $destFacility
+                ? round(Gps::miles($pickupFacility->lat, $pickupFacility->lon, $destFacility->lat, $destFacility->lon) * 1.25, 1) : null,
             'level' => $in['level'], 'trip_type' => $in['trip_type'], 'equipment' => array_values($in['equipment'] ?? []),
             'chief_complaint' => $in['chief_complaint'], 'stretcher_reason' => $in['stretcher_reason'], 'notes' => $in['notes'] ?? null,
             'duration_min' => (int) ($in['duration_min'] ?? 60),
             'pickup_facility_id' => $pickupFacility?->id, 'pickup_location' => $pickupFacility?->name ?? trim($in['pickup_location']),
             'destination_facility_id' => $destFacility?->id, 'destination' => $destFacility?->name ?? trim($in['destination']),
         ];
+    }
+
+    /** ICD-10 codes as [{code, description}], first = primary, each once, upper case. */
+    public static function diagnoses(array $rows): array
+    {
+        $out = [];
+        foreach ($rows as $r) {
+            $code = strtoupper(trim((string) ($r['code'] ?? '')));
+            if ($code === '' || isset($out[$code])) {
+                continue;
+            }
+            $out[$code] = ['code' => $code, 'description' => mb_substr(trim((string) ($r['description'] ?? '')) ?: (Icd10::COMMON[$code] ?? ''), 0, 200)];
+        }
+
+        return array_values($out);
+    }
+
+    /** Referring and receiving doctors: name, phone, fax and NPI. Empty ones are left out. */
+    public static function physicians(array $in): array
+    {
+        $out = [];
+        foreach (['referring', 'receiving'] as $role) {
+            $d = array_map(fn ($v) => mb_substr(trim((string) $v), 0, 100), array_intersect_key($in[$role] ?? [], array_flip(['name', 'phone', 'fax', 'npi'])));
+            if (array_filter($d)) {
+                $out[$role] = $d + ['name' => '', 'phone' => '', 'fax' => '', 'npi' => ''];
+            }
+        }
+
+        return $out;
     }
 
     /** The day(s) to book: one date, or each chosen weekday for the number of weeks. */
@@ -482,8 +574,12 @@ class Trips
         return DB::transaction(function () use ($t, $in, $expected, $by) {
             $t = Trip::lockForUpdate()->findOrFail($t->id);
             $this->checkVersion($t, $expected);
-            $allowed = ['level', 'trip_type', 'equipment', 'chief_complaint', 'stretcher_reason', 'notes', 'pickup_mode', 'pickup_time', 'duration_min', 'weight_lbs', 'payer', 'member_id', 'prior_auth', 'pcs_on_file', 'loaded_miles'];
+            $allowed = ['level', 'trip_type', 'equipment', 'chief_complaint', 'stretcher_reason', 'notes', 'pickup_mode', 'pickup_time', 'duration_min', 'weight_lbs', 'prior_auth', 'pcs_on_file', 'pcs_requested', 'pcs_signed', 'loaded_miles',
+                'priority', 'quoted_time', 'oxygen_lpm', 'stairs', 'riders', 'dnr', 'pickup_room', 'pickup_department', 'pickup_phone', 'dropoff_room', 'dropoff_department', 'dropoff_phone', 'caller_name', 'caller_title', 'caller_phone'];
             $fields = array_intersect_key($in, array_flip($allowed));
+            if (array_key_exists('diagnoses', $in)) {
+                $fields['diagnoses'] = self::diagnoses($in['diagnoses'] ?? []) ?: null;
+            }
             if (array_key_exists('pickup_mode', $fields) && $fields['pickup_mode'] !== 'scheduled' && ! array_key_exists('pickup_time', $fields)) {
                 $fields['pickup_time'] = $fields['pickup_mode'] === 'asap' ? now() : null;
             }
@@ -538,6 +634,7 @@ class Trips
             'more' => $events->count() === 500,
             'trips' => $trips->map(fn (Trip $t) => $this->summary($t, $viewer))->values(),
             'facilities' => $events->contains('type', 'facilities'),
+            'units' => $events->contains('type', 'units'),
             'by' => $events->where('type', 'trip')->mapWithKeys(fn ($e) => [$e->trip_id => $names[$e->user_id] ?? null])->filter(),
         ];
     }

@@ -41,6 +41,7 @@ class CrewController extends Controller
         return response()->json([
             'seq' => $this->trips->lastEventId(),
             'trucks' => Vehicle::whereIn('id', $vehicleIds)->get()->map(fn (Vehicle $v) => $this->trips->unit($v, $assignments->where('vehicle_id', $v->id)->values())),
+            'unitStatuses' => \App\Trips\Mdt::UNIT_STATUSES,
             'trips' => $trips->map(fn (Trip $t) => $this->crewTrip($t, $user))->values(),
         ]);
     }
@@ -58,6 +59,36 @@ class CrewController extends Controller
             throw ValidationException::withMessages(['status' => 'This trip has no next step.']);
         }
         $t = $this->trips->setStatus($trip, $next, $in['expected_version'], $user);
+
+        return response()->json(['trip' => $this->crewTrip($t->fresh(['patient', 'pickupFacility', 'destinationFacility']), $user)]);
+    }
+
+    /** The truck's own status from the MDT (available, at station, out of service...). */
+    public function unitStatus(Request $request, \App\Trips\Mdt $mdt)
+    {
+        $in = $request->validate(['vehicle_id' => ['required', 'integer'], 'status' => ['required', \Illuminate\Validation\Rule::in(array_keys(\App\Trips\Mdt::UNIT_STATUSES))]]);
+        if (! in_array($in['vehicle_id'], $this->assignments($request->user())->pluck('vehicle_id')->all(), true)) {
+            abort(403, 'You aren\'t on that truck.');
+        }
+        $mdt->setUnitStatus(Vehicle::findOrFail($in['vehicle_id']), $in['status'], $request->user());
+
+        return response()->json(['ok' => true]);
+    }
+
+    /** Odometer readings and a note to dispatch. */
+    public function details(Request $request, Trip $trip, \App\Trips\Mdt $mdt)
+    {
+        $in = $request->validate([
+            'expected_version' => ['required', 'integer'],
+            'odometer_pickup' => ['nullable', 'numeric', 'min:0', 'max:9999999'],
+            'odometer_destination' => ['nullable', 'numeric', 'min:0', 'max:9999999'],
+            'crew_notes' => ['nullable', 'string', 'max:1000'],
+        ]);
+        $user = $request->user();
+        if (! in_array($trip->vehicle_id, $this->assignments($user)->pluck('vehicle_id')->all(), true)) {
+            abort(403, 'That trip isn\'t on your truck.');
+        }
+        $t = $mdt->update($trip, $in, $in['expected_version'], $user);
 
         return response()->json(['trip' => $this->crewTrip($t->fresh(['patient', 'pickupFacility', 'destinationFacility']), $user)]);
     }
@@ -96,8 +127,15 @@ class CrewController extends Controller
             'chiefComplaint' => $t->chief_complaint,
             'stretcherReason' => $t->stretcher_reason,
             'notes' => $t->notes,
-            'pickupPhone' => $t->pickupFacility?->phone,
-            'destinationPhone' => $t->destinationFacility?->phone,
+            'pickupPhone' => $t->pickup_phone ?: $t->pickupFacility?->phone,
+            'destinationPhone' => $t->dropoff_phone ?: $t->destinationFacility?->phone,
+            'pickupRoom' => $t->pickup_room,
+            'dropoffRoom' => $t->dropoff_room,
+            'diagnoses' => $t->diagnoses ?? [],
+            'patientNotes' => array_filter(['dispatch' => $t->patient?->dispatch_notes, 'baseline' => $t->patient?->baseline]),
+            'crewNotes' => $t->crew_notes,
+            'odometerPickup' => $t->odometer_pickup,
+            'odometerDestination' => $t->odometer_destination,
         ]);
     }
 }

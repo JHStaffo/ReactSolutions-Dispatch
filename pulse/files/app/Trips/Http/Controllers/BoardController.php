@@ -94,6 +94,7 @@ class BoardController extends Controller
             'types' => Trip::TYPES, 'statuses' => Trip::STATUSES, 'flow' => Trip::FLOW, 'active' => Trip::ACTIVE,
             'equipment' => Trip::EQUIPMENT, 'alsEquipment' => Trip::ALS_EQUIPMENT, 'alsLevels' => Trip::ALS_LEVELS,
             'levels' => ScopeItem::LEVELS, 'cancelReasons' => Trip::CANCEL_REASONS, 'facilityKinds' => Facility::KINDS,
+            'priorities' => Trip::PRIORITIES, 'unitStatuses' => \App\Trips\Mdt::UNIT_STATUSES, 'icd10' => \App\Trips\Icd10::picker(),
         ];
     }
 

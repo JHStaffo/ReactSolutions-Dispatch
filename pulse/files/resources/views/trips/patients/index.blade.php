@@ -26,13 +26,13 @@
                 <p class="empty">Nobody on file matches. Check the spelling, or add the patient.</p>
             @else
                 <div class="table-wrap"><table>
-                    <tr><th>Patient #</th><th>Name</th><th>DOB</th><th>Insurance</th><th>Paperwork</th></tr>
+                    <tr><th>Patient #</th><th>Name</th><th>DOB</th><th>Primary payor</th><th>Paperwork</th></tr>
                     @foreach ($results as $p)
                         <tr @class(['struck' => ! $p->active])>
                             <td><a href="{{ route('trips.patients.show', $p) }}">{{ $p->patient_number }}</a></td>
                             <td><a href="{{ route('trips.patients.show', $p) }}">{{ $p->fullName() }}</a>@unless ($p->active)<div class="hint">Inactive</div>@endunless</td>
                             <td>{{ $p->dob }} <span class="hint">({{ $p->age() }})</span></td>
-                            <td>{{ $p->payer ?: '—' }}</td>
+                            <td>{{ $p->primaryPayer()?->payer?->name ?: '—' }}</td>
                             <td>
                                 @if (! $p->pcs_expires)<span class="pill pill-amber">No PCS date</span>
                                 @elseif ($p->pcs_expires->isPast())<span class="pill pill-red">PCS expired</span>

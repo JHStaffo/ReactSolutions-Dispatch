@@ -13,7 +13,15 @@ class Trip extends Model
 {
     protected $guarded = [];
 
-    protected $hidden = ['patient_first', 'patient_last', 'patient_dob', 'member_id', 'chief_complaint', 'stretcher_reason', 'notes', 'pickup_location', 'destination'];
+    /** Encrypted at rest, and never in JSON or arrays unless a page asks for them on purpose. */
+    public const ENCRYPTED = [
+        'patient_first', 'patient_last', 'patient_dob', 'member_id', 'secondary_member_id', 'chief_complaint', 'stretcher_reason', 'notes',
+        'pickup_location', 'destination', 'pickup_room', 'pickup_phone', 'dropoff_room', 'dropoff_phone', 'crew_notes',
+    ];
+
+    protected $hidden = [...self::ENCRYPTED, 'diagnoses'];
+
+    public const PRIORITIES = ['routine' => 'Routine', 'urgent' => 'Urgent', 'stat' => 'STAT'];
 
     public const TYPES = [
         'dialysis' => 'Dialysis',
@@ -51,10 +59,13 @@ class Trip extends Model
         'stair_chair' => 'Stair chair',
         'restraints' => 'Restraints',
         'isolation' => 'Isolation precautions',
+        'bipap' => 'BiPAP / CPAP',
+        'balloon_pump' => 'Balloon pump (IABP)',
+        'wide_wheelchair' => 'Wide wheelchair',
     ];
 
     /** Equipment a BLS crew can't run with. */
-    public const ALS_EQUIPMENT = ['cardiac_monitor', 'iv_pump', 'ventilator'];
+    public const ALS_EQUIPMENT = ['cardiac_monitor', 'iv_pump', 'ventilator', 'bipap', 'balloon_pump'];
 
     /** Levels that need an ALS (or higher) crew. */
     public const ALS_LEVELS = ['als', 'sct', 'rn'];
@@ -65,12 +76,12 @@ class Trip extends Model
 
     protected function casts(): array
     {
-        return [
-            'patient_first' => 'encrypted', 'patient_last' => 'encrypted', 'patient_dob' => 'encrypted',
-            'member_id' => 'encrypted', 'chief_complaint' => 'encrypted', 'stretcher_reason' => 'encrypted',
-            'notes' => 'encrypted', 'pickup_location' => 'encrypted', 'destination' => 'encrypted',
+        return array_fill_keys(self::ENCRYPTED, 'encrypted') + [
+            'diagnoses' => 'encrypted:array', 'physicians' => 'array', 'oxygen_lpm' => 'float', 'est_miles' => 'float',
+            'odometer_pickup' => 'float', 'odometer_destination' => 'float', 'epcr_pulled_at' => 'datetime',
+            'dnr' => 'boolean', 'pcs_requested' => 'boolean', 'pcs_signed' => 'boolean', 'wait_and_return' => 'boolean',
             'equipment' => 'array', 'status_times' => 'array', 'pcs_on_file' => 'boolean',
-            'pickup_time' => 'datetime', 'scheduled_start' => 'datetime', 'loaded_miles' => 'float',
+            'pickup_time' => 'datetime', 'quoted_time' => 'datetime', 'scheduled_start' => 'datetime', 'loaded_miles' => 'float',
         ];
     }
 
@@ -87,6 +98,11 @@ class Trip extends Model
     public function linked(): BelongsTo
     {
         return $this->belongsTo(Trip::class, 'linked_trip_id');
+    }
+
+    public function orderingFacility(): BelongsTo
+    {
+        return $this->belongsTo(Facility::class, 'ordering_facility_id');
     }
 
     public function pickupFacility(): BelongsTo

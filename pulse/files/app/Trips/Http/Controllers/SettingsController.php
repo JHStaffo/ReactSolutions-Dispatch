@@ -5,17 +5,21 @@ namespace App\Trips\Http\Controllers;
 use App\Http\Controllers\Controller;
 use App\Models\Setting;
 use App\Models\Vehicle;
+use App\Trips\Epcr;
 use App\Trips\Gps;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Validation\Rule;
 
-/** Dispatch > Trip Settings: GPS connection, each truck's phone and GPS device id, and timing. */
+/** Dispatch > Trip Settings: GPS connection, the ePCR feed, each truck's phone and GPS device id, and timing. */
 class SettingsController extends Controller
 {
-    public function index(Gps $gps)
+    public function index(Gps $gps, Epcr $epcr)
     {
         return view('trips.settings', [
+            'hasEpcrKey' => $epcr->key() !== null,
+            'newEpcrKey' => session('trips_new_epcr_key'),
+            'lastEpcrPull' => \App\Trips\Models\Trip::max('epcr_pulled_at'),
             'trucks' => Vehicle::where('kind', 'company')->orderByDesc('active')->orderBy('name')->get(),
             'hasKey' => $gps->ingestKey() !== null,
             'newKey' => session('trips_new_key'),
@@ -56,6 +60,14 @@ class SettingsController extends Controller
         audit_note('Made a new GPS webhook key (the old one stopped working).');
 
         return back()->with('trips_new_key', $key)->with('status', 'Made a new GPS key. Copy it now: it won\'t be shown again.');
+    }
+
+    public function newEpcrKey(Epcr $epcr)
+    {
+        $key = $epcr->newKey();
+        audit_note('Made a new ePCR feed key (the old one stopped working).');
+
+        return back()->with('trips_new_epcr_key', $key)->with('status', 'Made a new ePCR key. Copy it now: it won\'t be shown again.');
     }
 
     public function trucks(Request $request)

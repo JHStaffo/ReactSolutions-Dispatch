@@ -123,7 +123,10 @@ If the code email doesn't arrive, the server can't send mail yet. You can still 
 - **My Trips.** Open it on your phone.
 - **Trip Reports.**
 - **Run sheet.** The link is under each truck on the board.
-- **Trip Settings.**
+- **Trip Settings.** The ePCR feed key is here too.
+- **New trip.** Type a last name and first name and tab off: the patient on file comes up. Pick ASAP and set a quoted time.
+- **Payors.** Edit a patient and use "+ Add payor". Dispatch > Payors (supervisors) to merge duplicates.
+- **ePCR feed.** Make a key in Trip Settings, then `curl -H "X-EPCR-Key: <key>" "https://pulse.reactsolutions.com/api/trips/epcr/trips?since=2026-11-01"`.
 
 ## Updating after a new patch
 ```sh
@@ -135,3 +138,4 @@ git -c user.name="Pulse trial" -c user.email="trial@reactsolutions.com" am ~/tri
 php artisan migrate --force
 php artisan config:cache && php artisan route:cache && php artisan view:cache
 ```
+The November 18 update adds a migration that moves each patient's insurance into the new payor tables. To start the sample over instead: `php artisan migrate:fresh --seed --force`, then make-admin and `trips:sample` again.

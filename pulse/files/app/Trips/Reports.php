@@ -9,8 +9,8 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 
 /**
- * Trip reports. The summary has counts and times only (no patient details); the billing export is
- * the one place patient names leave Pulse, so it's trips_supervise only and audited.
+ * Trip reports: counts and times only, no patient details. (Billing is done from the ePCR, which
+ * pulls each call from App\Trips\Epcr.)
  */
 class Reports
 {
@@ -38,6 +38,9 @@ class Reports
         $onTime = $scheduled->filter(fn (Trip $t) => $at($t, 'on_scene')->lte($t->pickup_time->copy()->addMinutes($late)))->count();
         // ASAP response: booked to on scene.
         $asap = $trips->filter(fn (Trip $t) => $t->pickup_mode === 'asap' && $at($t, 'on_scene') && $at($t, 'queued'));
+        // ASAP with a quoted time: on scene by the time promised to the caller.
+        $quoted = $asap->filter(fn (Trip $t) => $t->quoted_time);
+        $quotedMet = $quoted->filter(fn (Trip $t) => $at($t, 'on_scene')->lte($t->quoted_time))->count();
         $asapAvg = $asap->isEmpty() ? null : (int) round($asap->avg(fn (Trip $t) => $at($t, 'queued')->diffInMinutes($at($t, 'on_scene'))));
 
         $count = fn (Collection $c, callable $key) => $c->groupBy($key)->map->count()->sortDesc()
@@ -61,6 +64,8 @@ class Reports
             'onTimePct' => $scheduled->isEmpty() ? null : (int) round($onTime * 100 / $scheduled->count()),
             'onTimeBase' => $scheduled->count(),
             'asapAvgMin' => $asapAvg,
+            'quotedPct' => $quoted->isEmpty() ? null : (int) round($quotedMet * 100 / $quoted->count()),
+            'quotedBase' => $quoted->count(),
             'loadedMiles' => round($completed->sum('loaded_miles'), 1),
             'byTripType' => $count($trips, fn (Trip $t) => Trip::TYPES[$t->trip_type] ?? $t->trip_type),
             'byLevel' => $count($trips, fn (Trip $t) => \App\Models\ScopeItem::LEVELS[$t->level] ?? $t->level),
@@ -79,7 +84,7 @@ class Reports
             ['Trip report', $label], [],
             ['Metric', 'Value'],
             ['Total trips', $r['total']], ['Completed', $r['completed']], ['Cancelled', $r['cancelled']], ['Still open', $r['open']],
-            ['On-time pickups %', $r['onTimePct']], ['ASAP average response (min)', $r['asapAvgMin']], ['Loaded miles', $r['loadedMiles']], [],
+            ['On-time pickups %', $r['onTimePct']], ['ASAP average response (min)', $r['asapAvgMin']], ['ASAP on scene by quoted time %', $r['quotedPct']], ['Loaded miles', $r['loadedMiles']], [],
             ['Unit', 'Trips', 'Busy hours', 'Loaded miles'],
             ...array_map(fn ($u) => [$u['unit'], $u['trips'], $u['busyHours'], $u['loadedMiles']], $r['units']), [],
             ['Trip type', 'Trips'], ...array_map(fn ($x) => [$x['key'], $x['count']], $r['byTripType']), [],
@@ -87,25 +92,6 @@ class Reports
             ['Payer', 'Trips'], ...array_map(fn ($x) => [$x['key'], $x['count']], $r['byPayer']), [],
             ['Cancellation reason', 'Trips'], ...array_map(fn ($x) => [$x['key'], $x['count']], $r['cancelReasons']),
         ];
-    }
-
-    /** Completed trips with patient, payer, paperwork and loaded miles, for billing. PHI. */
-    public function billingRows(Carbon $from, Carbon $to): array
-    {
-        $rows = [['Trip #', 'Date', 'Last name', 'First name', 'DOB', 'Payer', 'Member ID', 'Prior auth', 'PCS on file', 'Level', 'Trip type', 'Leg', 'Pickup', 'Destination', 'Unit', 'En route', 'On scene', 'Transporting', 'At destination', 'Completed', 'Loaded miles']];
-        $time = fn (Trip $t, string $s) => isset($t->status_times[$s]) ? Carbon::parse($t->status_times[$s])->setTimezone(config('app.timezone'))->format('H:i') : '';
-        foreach ($this->tripsBetween($from, $to)->where('status', 'completed')->sortBy(fn (Trip $t) => $t->startsAt()?->timestamp) as $t) {
-            $rows[] = [
-                $t->trip_number, $t->startsAt()?->toDateString(), $t->patient_last, $t->patient_first, $t->patient_dob,
-                $t->payer, $t->member_id, $t->prior_auth, $t->pcs_on_file ? 'Yes' : 'No',
-                \App\Models\ScopeItem::LEVELS[$t->level] ?? $t->level, Trip::TYPES[$t->trip_type] ?? $t->trip_type, $t->leg,
-                $t->pickup_location, $t->destination, $t->vehicle?->name ?: $t->vehicle?->plate,
-                $time($t, 'enroute'), $time($t, 'on_scene'), $time($t, 'transporting'), $time($t, 'at_destination'), $time($t, 'completed'),
-                $t->loaded_miles,
-            ];
-        }
-
-        return $rows;
     }
 
     /** A CSV download. Cells that start like a formula are prefixed so a spreadsheet won't run them. */

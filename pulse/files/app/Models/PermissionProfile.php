@@ -37,7 +37,7 @@ class PermissionProfile extends Model
             'trips_dispatch' => 'Dispatch trips (book trips, assign them to trucks, change status, patients and facilities; sees patient details)',
             'trips_crew' => 'My Trips (the crew phone screen: their truck\'s trips, status buttons and sharing phone location)',
             'trips_reports' => 'Trip reports (counts, on-time, response and unit utilization, no patient details, CSV)',
-            'trips_supervise' => 'Trip supervisor (reopen closed trips, the billing export with patient details, and Trip Settings: GPS and timing)',
+            'trips_supervise' => 'Trip supervisor (reopen closed trips, the payor list, and Trip Settings: GPS, the ePCR feed and timing)',
         ],
         'Protocols' => [
             'protocols' => 'Protocol book (read approved protocols)',

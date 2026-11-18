@@ -142,6 +142,7 @@ class Setting extends Model
         'service_desk_close_days' => '7',
         // Trip Board (App\Trips). The GPS key and Samsara token are encrypted with APP_KEY; empty means off.
         'trips_gps_key' => '',
+        'trips_epcr_key' => '', // encrypted; the ePCR's key for pulling trips
         'trips_samsara_token' => '',
         // Demo only: moves trucks whose GPS device id starts with SIM- around trips_sim_center.
         'trips_gps_simulator' => '0',

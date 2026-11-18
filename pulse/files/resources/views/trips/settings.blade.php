@@ -22,6 +22,20 @@
         </form>
     </div>
 
+    <div class="card">
+        <h2>ePCR import from CAD</h2>
+        <p>So crews don't retype the call, the ePCR can pull each trip once a truck has it: the patient, times, pickup and destination with rooms, complaint and ICD-10 diagnoses, equipment, doctors and the crew. Billing is done from the ePCR.</p>
+        <p>It asks <code>GET {{ route('trips.epcr.feed') }}?since=<em>last time it asked</em></code> with the header <code>X-EPCR-Key: your key</code>, and gets XML using NEMSIS 3.5 element names (add <code>&amp;format=json</code> for JSON). The <code>X-Next-Since</code> header says what to send as <code>since</code> next time. Each pull is in the audit log with its trip numbers. Dispatchers can also download one trip's file from the trip drawer.</p>
+        @if ($newEpcrKey)
+            <div class="flash flash-ok"><strong>Your new ePCR key:</strong> <code style="user-select:all">{{ $newEpcrKey }}</code><br>Copy it now and give it to whoever sets up the ePCR import. It won't be shown again.</div>
+        @endif
+        <form method="post" action="{{ route('trips.settings.epcr-key') }}" onsubmit="return {{ $hasEpcrKey ? "confirm('The old key stops working right away. Make a new one?')" : 'true' }}">@csrf
+            <p>{!! $hasEpcrKey ? '<span class="pill pill-green">A key is set</span>' : '<span class="pill pill-amber">No key yet: the feed is off</span>' !!}
+            @if ($lastEpcrPull)<span class="hint">Last pulled {{ \Illuminate\Support\Carbon::parse($lastEpcrPull)->setTimezone(config('app.timezone'))->format('m/d g:i A') }}</span>@endif
+            <button type="submit" class="btn btn-small btn-outline">{{ $hasEpcrKey ? 'Make a new key' : 'Make a key' }}</button></p>
+        </form>
+    </div>
+
     <form method="post" action="{{ route('trips.settings.update') }}" class="card">@csrf @method('put')
         <h3>2. Samsara</h3>
         <p>{!! $hasSamsara ? '<span class="pill pill-green">Connected</span> Pulse reads vehicle locations from Samsara every minute.' : '<span class="pill pill-amber">Not connected</span>' !!}</p>

@@ -10,6 +10,8 @@ use App\Models\Vehicle;
 use App\Trips\Gps;
 use App\Trips\Models\Facility;
 use App\Trips\Models\GpsPosition;
+use App\Trips\Models\PatientPayer;
+use App\Trips\Models\Payer;
 use App\Trips\Models\Patient;
 use App\Trips\Models\Trip;
 use App\Trips\Models\TripEvent;
@@ -110,15 +112,16 @@ class TripsTest extends TestCase
 
     public function test_patient_details_are_encrypted_at_rest(): void
     {
-        $t = $this->book();
+        $t = $this->book(['pickup_room' => 'Sample 12', 'pickup_phone' => '1948', 'diagnoses' => [['code' => 'N18.6']]]);
+        $t->forceFill(['crew_notes' => 'Sample note'])->save();
         $row = DB::table('trips')->find($t->id);
-        foreach (['patient_first', 'patient_last', 'patient_dob', 'member_id', 'chief_complaint', 'pickup_location', 'destination'] as $col) {
+        foreach (['patient_first', 'patient_last', 'patient_dob', 'member_id', 'chief_complaint', 'pickup_location', 'destination', 'pickup_room', 'pickup_phone', 'diagnoses', 'crew_notes'] as $col) {
             $this->assertStringNotContainsString('Sample', (string) $row->{$col}.'');
             $this->assertStringNotContainsString('1948', (string) $row->{$col});
         }
         $p = DB::table('trip_patients')->first();
         $this->assertStringNotContainsString('Sample', $p->last_name);
-        $this->assertStringNotContainsString('SMP0001', $p->member_id);
+        $this->assertStringNotContainsString('SMP0001', DB::table('trip_patient_payers')->value('member_id'));
         $this->assertSame('Sample', Patient::first()->last_name);
         // And none of it ends up in the audit log.
         $this->assertFalse(AuditLog::where('description', 'like', '%Sample%')->exists());
@@ -255,11 +258,25 @@ class TripsTest extends TestCase
         $this->actingAs($this->dispatcher)->post('/trips/patients', $in)->assertSessionHas('error');
         $this->assertSame(1, Patient::count());
 
-        $this->actingAs($this->dispatcher)->put("/trips/patients/{$p->id}", $in + ['version' => $p->version, 'payer' => 'Example Medicaid'])->assertSessionHas('status');
-        $this->assertSame('Example Medicaid', $p->fresh()->payer);
+        $payors = ['payors' => [['payer_name' => 'Example Medicaid', 'member_id' => 'M1'], ['payer_name' => 'sample  MEDICARE.', 'member_id' => 'M2', 'subscriber_relationship' => 'spouse', 'subscriber_name' => 'Sam Specimen']]];
+        $this->actingAs($this->dispatcher)->put("/trips/patients/{$p->id}", $in + $payors + ['version' => $p->version, 'mrn' => 'MRN-1', 'city' => 'Sampleton', 'state' => 'va', 'nok_name' => 'Kin Sample'])->assertSessionHas('status');
+        $p = $p->fresh();
+        $this->assertSame(['Example Medicaid', 'sample MEDICARE.'], $p->payers->map(fn ($pp) => $pp->payer->name)->all());
+        $this->assertSame('VA', $p->state);
+        $this->assertStringNotContainsString('MRN-1', DB::table('trip_patients')->value('mrn'));
+        $this->assertTrue(AuditLog::where('description', 'like', "Changed patient {$p->patient_number}:%payors%")->exists());
         // Stale form: refused.
-        $this->actingAs($this->dispatcher)->put("/trips/patients/{$p->id}", $in + ['version' => $p->version, 'payer' => 'Private pay'])->assertSessionHas('error');
-        $this->assertSame('Example Medicaid', $p->fresh()->payer);
+        $this->actingAs($this->dispatcher)->put("/trips/patients/{$p->id}", $in + ['version' => $p->version - 1, 'payors' => []])->assertSessionHas('error');
+        $this->assertSame(2, $p->payers()->count());
+        // The same payor twice is refused, and nothing changes.
+        $this->actingAs($this->dispatcher)->put("/trips/patients/{$p->id}", $in + ['version' => $p->version, 'payors' => [['payer_name' => 'Example Medicaid'], ['payer_name' => 'example medicaid']]])->assertSessionHasErrors('payors.1.payer_name');
+        $this->assertSame(2, $p->payers()->count());
+        // Reordered: Medicare primary now.
+        $medicare = $p->payers[1]->payer_id;
+        $this->actingAs($this->dispatcher)->put("/trips/patients/{$p->id}", $in + ['version' => $p->version, 'payors' => [['payer_id' => $medicare, 'payer_name' => 'whatever was shown'], ['payer_name' => 'Example Medicaid']]])->assertSessionHas('status');
+        $this->assertSame($medicare, $p->fresh()->primaryPayer()->payer_id);
+        $this->actingAs($this->dispatcher)->get("/trips/patients/{$p->id}")->assertOk()->assertSee('Primary:')->assertSee('Kin Sample')->assertSee('Sampleton');
+        $this->actingAs($this->dispatcher)->get("/trips/patients/{$p->id}/edit")->assertOk()->assertSee('+ Add payor');
 
         // PCS expiring within a week shows on the patient's trips.
         $t = $this->book(['patient_id' => $p->id, 'patient_first' => 'Gail', 'patient_last' => 'Specimen', 'patient_dob' => '1963-01-01', 'pcs_on_file' => false]);
@@ -301,7 +318,7 @@ class TripsTest extends TestCase
         $this->assertSame($this->bls->id, GpsPosition::latest('id')->first()->vehicle_id);
     }
 
-    public function test_reports_have_no_patient_details_and_billing_is_supervisor_only_and_audited(): void
+    public function test_reports_have_no_patient_details_and_there_is_no_billing_export(): void
     {
         $t = $this->book(['pickup_mode' => 'asap', 'pickup_time' => null]);
         $this->actingAs($this->dispatcher)->postJson("/trips/{$t->id}/assign", ['vehicle_id' => $this->bls->id, 'start' => '2026-11-16 09:15', 'expected_version' => 1])->assertOk();
@@ -314,11 +331,8 @@ class TripsTest extends TestCase
         $csv = $this->actingAs($reports)->get('/trips/reports.csv?from=2026-11-16&to=2026-11-16')->assertOk()->streamedContent();
         $this->assertStringContainsString('"Total trips",1', $csv);
         $this->assertStringNotContainsString('Ada', $csv);
-        $this->actingAs($reports)->get('/trips/reports/billing.csv')->assertForbidden();
-
-        $billing = $this->actingAs($this->admin)->get('/trips/reports/billing.csv?from=2026-11-16&to=2026-11-16')->assertOk()->streamedContent();
-        $this->assertStringContainsString('Sample,Ada,1948-03-14', $billing);
-        $this->assertTrue(AuditLog::where('description', 'like', 'Billing export (patient information): 1 completed trips%')->exists());
+        // Billing is done from the ePCR, not from dispatch.
+        $this->actingAs($this->admin)->get('/trips/reports/billing.csv')->assertNotFound();
     }
 
     public function test_csv_cells_that_look_like_formulas_are_neutralised(): void
@@ -375,5 +389,146 @@ class TripsTest extends TestCase
         $this->assertGreaterThan(20, Trip::count());
         $this->actingAs($this->admin)->get('/trips')->assertOk();
         $this->actingAs($this->admin)->getJson('/trips/crew/data')->assertOk()->assertJsonCount(1, 'trucks');
+    }
+
+    public function test_payors_are_listed_once_and_typed_ones_are_added(): void
+    {
+        $this->book(['payer' => 'Sample Health PPO', 'member_id' => 'A1']);
+        $this->book(['patient_first' => 'Fred', 'patient_last' => 'Fakename', 'patient_dob' => '1937-07-02', 'payer' => 'sample health ppo ', 'member_id' => 'B2']);
+        $this->assertSame(1, Payer::where('name_key', 'samplehealthppo')->count());
+        $this->assertSame('typed', Payer::where('name_key', 'samplehealthppo')->value('added_from'));
+        $list = $this->actingAs($this->dispatcher)->getJson('/trips/payers.json')->assertOk()->json();
+        $this->assertSame(1, collect($list)->where('name', 'Sample Health PPO')->count());
+        $this->actingAs($this->viewer)->getJson('/trips/payers.json')->assertForbidden();
+
+        // Intake with a payor the patient already has updates the member id; a new one goes first.
+        $ada = Patient::where('patient_number', 'P-000001')->first();
+        $medicare = Payer::where('name', 'Medicare')->first();
+        $this->book(['patient_id' => $ada->id, 'payer' => null, 'payer_id' => $medicare->id, 'member_id' => 'MCR9']);
+        $this->assertSame(['Medicare', 'Sample Health PPO'], $ada->fresh()->payers->map(fn ($pp) => $pp->payer->name)->all());
+        $t = $this->book(['patient_id' => $ada->id, 'payer' => 'Sample Health PPO', 'member_id' => 'A1-NEW']);
+        $this->assertSame('A1-NEW', PatientPayer::where('patient_id', $ada->id)->where('payer_id', Payer::where('name_key', 'samplehealthppo')->value('id'))->first()->member_id);
+        $this->assertSame('Medicare', $t->payer);
+        $this->assertSame('Sample Health PPO', $t->secondary_payer);
+
+        // Supervisors tidy the list: only they can, and merging moves the patients.
+        $dupe = Payer::create(['name' => 'Sample Hlth PPO', 'name_key' => 'samplehlthppo', 'kind' => 'commercial', 'added_from' => 'typed']);
+        PatientPayer::create(['patient_id' => Patient::where('patient_number', 'P-000002')->value('id'), 'payer_id' => $dupe->id, 'position' => 2]);
+        $this->actingAs($this->dispatcher)->get('/trips/payers')->assertForbidden();
+        $this->actingAs($this->admin)->get('/trips/payers')->assertOk()->assertSee('Sample Hlth PPO')->assertSee('Typed in');
+        $keep = Payer::where('name_key', 'samplehealthppo')->first();
+        $this->actingAs($this->admin)->put("/trips/payers/{$dupe->id}", ['name' => 'Sample Health PPO', 'kind' => 'commercial', 'active' => 1])->assertSessionHas('error');
+        $this->actingAs($this->admin)->post("/trips/payers/{$dupe->id}/merge", ['into' => $keep->id])->assertSessionHas('status');
+        $this->assertNull(Payer::find($dupe->id));
+        $this->assertSame(0, PatientPayer::where('payer_id', $dupe->id)->count());
+        $this->assertTrue(AuditLog::where('action', 'trips.payers.merge')->where('description', 'like', 'Merged payor Sample Hlth PPO into Sample Health PPO%')->exists());
+        $this->actingAs($this->admin)->put("/trips/payers/{$keep->id}", ['name' => 'Sample Health PPO Plus', 'kind' => 'commercial', 'payer_code' => 'SHP01', 'active' => 1])->assertRedirect();
+        $this->assertSame('list', $keep->fresh()->added_from);
+        $this->assertSame('Sample Health PPO Plus', $t->fresh()->secondary_payer);
+    }
+
+    public function test_intake_saves_the_call_details_and_asap_trips_get_a_quoted_time(): void
+    {
+        $t = $this->book([
+            'pickup_mode' => 'asap', 'pickup_time' => null, 'quoted_time' => '2026-11-16 21:00', 'priority' => 'urgent',
+            'ordering_facility_id' => $this->home->id, 'caller_name' => 'Nora Nurse', 'caller_title' => 'RN', 'caller_phone' => '555-0199',
+            'pickup_department' => 'Emergency', 'pickup_room' => 'ER 4', 'dropoff_room' => 'Chair 9', 'oxygen_lpm' => 2.5, 'stairs' => 1, 'riders' => 1, 'dnr' => true,
+            'diagnoses' => [['code' => 'n18.6'], ['code' => 'Z99.2'], ['code' => 'N18.6']],
+            'physicians' => ['referring' => ['name' => 'Dr. Sample', 'npi' => '1234567893'], 'receiving' => ['name' => '']],
+            'pcs_requested' => true, 'round_trip' => true, 'return_mode' => 'wait',
+        ]);
+        $this->assertSame('2026-11-16 21:00', $t->quoted_time->format('Y-m-d H:i'));
+        $this->assertSame([['code' => 'N18.6', 'description' => 'End stage renal disease'], ['code' => 'Z99.2', 'description' => 'Dependence on renal dialysis']], $t->diagnoses);
+        $this->assertSame(['referring'], array_keys($t->physicians));
+        $this->assertTrue($t->dnr && $t->pcs_requested && $t->wait_and_return);
+        $this->assertSame('urgent', $t->priority);
+        $this->assertNotNull($t->est_miles);
+        // The return leg picks up where the outbound drops off, after the trip's minutes, and the crew waits.
+        $back = Trip::find($t->linked_trip_id);
+        $this->assertSame('Chair 9', $back->pickup_room);
+        $this->assertSame('ER 4', $back->dropoff_room);
+        $this->assertTrue($back->wait_and_return);
+        $this->assertSame('scheduled', $back->pickup_mode);
+
+        // An ASAP trip is late after its quoted time, not after it was booked.
+        $late = fn () => app(\App\Trips\Trips::class)->summary($t->fresh(), $this->dispatcher);
+        $this->assertSame('2026-11-16T21:00:00', substr($late()['quotedTime'], 0, 19));
+        // A scheduled trip has no quoted time even if one is sent.
+        $s = $this->book(['quoted_time' => '2026-11-16 21:00']);
+        $this->assertNull($s->quoted_time);
+
+        $this->actingAs($this->dispatcher)->postJson('/trips/book', $this->booking(['diagnoses' => [['code' => 'dialysis']]]))->assertUnprocessable()->assertJsonValidationErrors('diagnoses.0.code');
+        $this->actingAs($this->dispatcher)->postJson('/trips/book', $this->booking(['physicians' => ['referring' => ['npi' => '12']]]))->assertUnprocessable();
+        $this->actingAs($this->dispatcher)->getJson("/trips/{$t->id}")->assertOk()->assertJsonPath('callerName', 'Nora Nurse')->assertJsonPath('diagnoses.0.code', 'N18.6');
+    }
+
+    public function test_intake_lookup_finds_patients_by_name_and_birth_date(): void
+    {
+        $this->book();
+        $p = Patient::first();
+        $p->update(['mrn' => 'MRN-777', 'dispatch_notes' => 'Side door', 'phone' => '(555) 010-2222']);
+        $this->actingAs($this->dispatcher)->postJson('/trips/patients/lookup', ['q' => 'Sample Ada 1948-03-14'])->assertOk()->assertJsonCount(1)->assertJsonPath('0.payer', 'Sample Medicare');
+        $this->actingAs($this->dispatcher)->postJson('/trips/patients/lookup', ['q' => 'MRN-777'])->assertOk()->assertJsonCount(1);
+        $this->actingAs($this->dispatcher)->postJson('/trips/patients/lookup', ['q' => '5550102222'])->assertOk()->assertJsonCount(1);
+        $this->actingAs($this->dispatcher)->postJson('/trips/patients/lookup', ['q' => 'Sample 1950-01-01'])->assertOk()->assertJsonCount(0);
+        $this->actingAs($this->dispatcher)->getJson("/trips/patients/{$p->id}/intake")->assertOk()
+            ->assertJsonPath('payer', 'Sample Medicare')->assertJsonPath('memberId', 'SMP0001')->assertJsonPath('dispatchNotes', 'Side door');
+    }
+
+    public function test_mdt_unit_status_and_crew_details(): void
+    {
+        $mine = $this->book();
+        $theirs = $this->book(['level' => 'als']);
+        $this->actingAs($this->dispatcher)->postJson("/trips/{$mine->id}/assign", ['vehicle_id' => $this->bls->id, 'start' => '2026-11-16 10:00', 'expected_version' => 1])->assertOk();
+        $this->actingAs($this->dispatcher)->postJson("/trips/{$theirs->id}/assign", ['vehicle_id' => $this->als->id, 'start' => '2026-11-16 10:00', 'expected_version' => 1])->assertOk();
+
+        $this->actingAs($this->crew)->postJson('/trips/crew/unit-status', ['vehicle_id' => $this->bls->id, 'status' => 'fuel'])->assertOk();
+        $this->assertSame('fuel', $this->bls->fresh()->trip_unit_status);
+        $this->actingAs($this->crew)->postJson('/trips/crew/unit-status', ['vehicle_id' => $this->als->id, 'status' => 'fuel'])->assertForbidden();
+        $this->actingAs($this->crew)->postJson('/trips/crew/unit-status', ['vehicle_id' => $this->bls->id, 'status' => 'napping'])->assertUnprocessable();
+        $this->assertTrue(TripEvent::where('type', 'units')->exists());
+
+        $v = $mine->fresh()->version;
+        $this->actingAs($this->crew)->postJson("/trips/crew/{$mine->id}/details", ['odometer_pickup' => 1000.2, 'odometer_destination' => 1012.7, 'crew_notes' => 'Family meeting us there', 'expected_version' => $v])->assertOk();
+        $m = $mine->fresh();
+        $this->assertEqualsWithDelta(12.5, $m->loaded_miles, 0.01);
+        $this->assertSame('Family meeting us there', $m->crew_notes);
+        $this->actingAs($this->crew)->postJson("/trips/crew/{$mine->id}/details", ['crew_notes' => 'x', 'expected_version' => $v])->assertStatus(409);
+        $this->actingAs($this->crew)->postJson("/trips/crew/{$theirs->id}/details", ['crew_notes' => 'x', 'expected_version' => $theirs->fresh()->version])->assertForbidden();
+        $this->assertFalse(AuditLog::where('description', 'like', '%Family meeting%')->exists());
+    }
+
+    public function test_epcr_feed_needs_the_key_and_is_audited(): void
+    {
+        $t = $this->book(['diagnoses' => [['code' => 'N18.6']], 'pickup_room' => '12B']);
+        $queued = $this->book(['patient_first' => 'Fred', 'patient_last' => 'Fakename', 'patient_dob' => '1937-07-02']);
+        $this->actingAs($this->dispatcher)->postJson("/trips/{$t->id}/assign", ['vehicle_id' => $this->bls->id, 'start' => '2026-11-16 10:00', 'expected_version' => 1])->assertOk();
+
+        $this->get('/api/trips/epcr/trips')->assertUnauthorized();
+        $this->actingAs($this->dispatcher)->post('/trips/settings/epcr-key')->assertForbidden();
+        $this->actingAs($this->admin)->post('/trips/settings/epcr-key')->assertSessionHas('trips_new_epcr_key');
+        $key = session('trips_new_epcr_key');
+        $this->assertNotSame($key, \App\Models\Setting::get('trips_epcr_key'), 'The key is stored encrypted.');
+        auth()->logout();
+        $this->get('/api/trips/epcr/trips', ['X-EPCR-Key' => 'wrong'])->assertUnauthorized();
+
+        $r = $this->get('/api/trips/epcr/trips?since=2026-11-16T00:00:00', ['X-EPCR-Key' => $key])->assertOk()->assertHeader('X-Next-Since');
+        $xml = $r->getContent();
+        $this->assertStringContainsString('<eRecord.01>'.$t->trip_number.'</eRecord.01>', $xml);
+        $this->assertStringContainsString('<ePatient.02>Sample</ePatient.02>', $xml);
+        $this->assertStringContainsString('<eSituation.11>N18.6</eSituation.11>', $xml);
+        $this->assertStringContainsString('<PickupRoom>12B</PickupRoom>', $xml);
+        $this->assertStringNotContainsString($queued->trip_number, $xml, 'Only trips a truck has.');
+        $this->assertNotNull($t->fresh()->epcr_pulled_at);
+        $log = AuditLog::where('action', 'trips.epcr.feed')->latest('id')->first();
+        $this->assertSame("ePCR pulled 1 trip: {$t->trip_number}.", $log->description);
+        // Asking again from where it left off gets nothing new.
+        $this->get('/api/trips/epcr/trips?format=json&since='.urlencode($r->headers->get('X-Next-Since')), ['X-EPCR-Key' => $key])->assertOk()->assertJsonCount(0, 'trips');
+        $j = $this->get('/api/trips/epcr/trips?format=json&since=2026-11-16T00:00:00', ['X-EPCR-Key' => $key])->assertOk()->json('trips.0.ePatient');
+        $this->assertSame('Ada', $j['ePatient.03']);
+
+        $this->actingAs($this->viewer)->get("/trips/{$t->id}/epcr.xml")->assertForbidden();
+        $this->actingAs($this->dispatcher)->get("/trips/{$t->id}/epcr.xml")->assertOk()->assertHeader('Content-Disposition', 'attachment; filename="'.$t->trip_number.'-epcr.xml"');
+        $this->assertTrue(AuditLog::where('action', 'trips.epcr.file')->where('description', "Downloaded the ePCR file for trip {$t->trip_number}.")->exists());
     }
 }

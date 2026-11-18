@@ -39,7 +39,7 @@
                             @if ($u->hasPermission('trips_dispatch'))<a href="{{ route('trips.patients') }}" @class(['active' => request()->routeIs('trips.patients*')])>Patients</a><a href="{{ route('trips.facilities') }}" @class(['active' => request()->routeIs('trips.facilities*')])>Facilities</a>@endif
                             @if ($u->hasPermission('trips_crew'))<a href="{{ route('trips.crew') }}" @class(['active' => request()->routeIs('trips.crew*')])>My Trips</a>@endif
                             @if ($u->hasAnyPermission('trips_reports', 'trips_supervise'))<a href="{{ route('trips.reports') }}" @class(['active' => request()->routeIs('trips.reports*')])>Trip Reports</a>@endif
-                            @if ($u->hasPermission('trips_supervise'))<a href="{{ route('trips.settings') }}" @class(['active' => request()->routeIs('trips.settings*')])>Trip Settings</a>@endif
+                            @if ($u->hasPermission('trips_supervise'))<a href="{{ route('trips.payers') }}" @class(['active' => request()->routeIs('trips.payers*')])>Payors</a><a href="{{ route('trips.settings') }}" @class(['active' => request()->routeIs('trips.settings*')])>Trip Settings</a>@endif
                             @if ($u->hasPermission('credit_calls'))<a href="{{ route('dispatch.create') }}" @class(['active' => request()->routeIs('dispatch.*')])>Credit a call</a>@endif
                             @if ($u->hasPermission('scope_check'))<a href="{{ route('scope') }}" @class(['active' => request()->routeIs('scope')])>Scope Check</a>@endif
                             @if ($u->hasPermission('forms'))<a href="{{ route('forms') }}" @class(['active' => request()->routeIs('forms', 'forms.show')])>Forms</a>@endif
