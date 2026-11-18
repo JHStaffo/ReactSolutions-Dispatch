@@ -1,0 +1,62 @@
+<?php
+
+return [
+
+    /*
+    |--------------------------------------------------------------------------
+    | Third Party Services
+    |--------------------------------------------------------------------------
+    |
+    | This file is for storing the credentials for third party services such
+    | as Resend, Postmark, AWS, and more. This file provides the de facto
+    | location for this type of information, allowing packages to have
+    | a conventional file to locate the various service credentials.
+    |
+    */
+
+    'postmark' => [
+        'key' => env('POSTMARK_API_KEY'),
+    ],
+
+    'resend' => [
+        'key' => env('RESEND_API_KEY'),
+    ],
+
+    'ses' => [
+        'key' => env('AWS_ACCESS_KEY_ID'),
+        'secret' => env('AWS_SECRET_ACCESS_KEY'),
+        'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
+    ],
+
+    'slack' => [
+        'notifications' => [
+            'bot_user_oauth_token' => env('SLACK_BOT_USER_OAUTH_TOKEN'),
+            'channel' => env('SLACK_BOT_USER_DEFAULT_CHANNEL'),
+        ],
+    ],
+
+    // Reads uploaded protocol PDFs and photos (Protocols > Build protocols > Import).
+    // The OIG's List of Excluded Individuals/Entities, updated monthly.
+    'oig' => [
+        'url' => env('OIG_LEIE_URL', 'https://oig.hhs.gov/exclusions/downloadables/UPDATED.csv'),
+    ],
+
+    // The Virginia Office of EMS provider search (Admin > EMS Affiliations).
+    'va_ems' => [
+        'url' => env('VA_EMS_SEARCH_URL', 'https://vdhems.vdh.virginia.gov/emsapps/ProviderSearch.html'),
+        'pause_ms' => (int) env('VA_EMS_PAUSE_MS', 1000), // between Team Members, to go easy on the state's site
+    ],
+
+    'anthropic' => [
+        'key' => env('ANTHROPIC_API_KEY'),
+        'model' => env('ANTHROPIC_MODEL', 'claude-opus-5-5'),
+    ],
+
+    // Trip Board map tiles (OpenStreetMap's tiles are fine for light use; use a paid tile host for a busy dispatch floor) and Samsara.
+    'trips' => [
+        'map_tile_url' => env('TRIPS_MAP_TILE_URL', 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'),
+        'map_attribution' => env('TRIPS_MAP_ATTRIBUTION', '&copy; OpenStreetMap contributors'),
+        'samsara_url' => env('TRIPS_SAMSARA_URL', 'https://api.samsara.com/fleet/vehicles/locations'),
+    ],
+
+];
