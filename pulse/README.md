@@ -14,6 +14,8 @@ Nothing here has been pushed to the drawbox repository. To add it to Pulse, appl
 - `trips-module.patch`: one commit made with `git format-patch` on top of drawbox `e0d69aa` (Admin > ID Cards, #122).
 - `files/`: the same files laid out at their drawbox paths, for reading or copying by hand.
 
+To try it on reactsolutions.com (pulse.reactsolutions.com), see [TRY-ON-REACTSOLUTIONS.md](TRY-ON-REACTSOLUTIONS.md).
+
 ## Add it to Pulse
 
 From a drawbox checkout:
