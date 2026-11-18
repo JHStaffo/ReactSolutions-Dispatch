@@ -1148,3 +1148,5 @@ tr.nest-end td { border-bottom: 2px solid var(--navy); padding: 0; }
 .tr-bar i { display: block; height: 100%; background: var(--teal); }
 .trip-card-top b { white-space: nowrap; }
 .tm-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; }
+.trip-intake-grid input, .trip-intake-grid select { min-width: 0; }
+.trip-intake-grid .trip-repeat label { flex-direction: row; align-items: center; gap: 6px; }

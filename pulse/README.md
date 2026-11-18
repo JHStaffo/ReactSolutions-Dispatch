@@ -113,5 +113,6 @@ The data is sample data, but the module protects it as if it were real PHI:
 | ![Trip Map](screenshots/map.png) | ![My Trips](screenshots/crew.png) |
 | ![Trip Reports](screenshots/reports.png) | ![Trip Settings](screenshots/settings.png) |
 | ![Run sheet](screenshots/runsheet.png) | ![Facilities](screenshots/facilities.png) |
+| ![Trip drawer](screenshots/drawer.png) | ![New trip](screenshots/intake.png) |
 
 The map tiles are blank in these pictures only because the machine that took them had no internet access.

@@ -94,7 +94,7 @@
                         <label class="trip-check"><input type="radio" name="pickup_mode" value="scheduled"> Scheduled</label>
                         <label class="trip-check"><input type="radio" name="pickup_mode" value="will_call"> Will-call</label>
                     </div>
-                    <label>Pickup time<input type="datetime-local" name="pickup_time" step="900"></label>
+                    <label class="trip-wide">Pickup time<input type="datetime-local" name="pickup_time" step="900"></label>
                     <label>Minutes the trip takes<input type="number" name="duration_min" value="60" min="15" max="600" step="15"></label>
                     <label class="trip-check trip-wide"><input type="checkbox" name="round_trip" value="1"> Round trip (books a return leg)</label>
                     <div class="trip-wide trip-return" hidden>

@@ -1,4 +1,4 @@
-From 54183ada8ec1fe3039bd14faa3d59b2b42117b52 Mon Sep 17 00:00:00 2001
+From 277939573d3cfaef7ade70b133bceeac73f07f40 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 18 Nov 2026 00:21:38 +0000
 Subject: [PATCH] Add Dispatch > Trip Board: non-emergency trips, patients,
@@ -44,7 +44,7 @@ Claude-Session: https://claude.ai/code/session_01YKT3xkgXK6qCfDX9SM5x4p
  bootstrap/app.php                             |   2 +
  config/services.php                           |   7 +
  .../2026_11_18_000100_create_trip_tables.php  | 183 +++++
- public/css/app.css                            | 149 ++++
+ public/css/app.css                            | 151 ++++
  public/js/trips-board.js                      | 706 ++++++++++++++++++
  resources/views/layouts/app.blade.php         |   9 +-
  resources/views/trips/board.blade.php         | 150 ++++
@@ -60,7 +60,7 @@ Claude-Session: https://claude.ai/code/session_01YKT3xkgXK6qCfDX9SM5x4p
  routes/console.php                            |  33 +
  routes/trips.php                              |  78 ++
  tests/Feature/TripsTest.php                   | 379 ++++++++++
- 46 files changed, 4705 insertions(+), 3 deletions(-)
+ 46 files changed, 4707 insertions(+), 3 deletions(-)
  create mode 100644 app/Http/Middleware/TripsIdle.php
  create mode 100644 app/Trips/Gps.php
  create mode 100644 app/Trips/Http/Controllers/BoardController.php
@@ -2905,10 +2905,10 @@ index 0000000..c7b8a76
 +    }
 +};
 diff --git a/public/css/app.css b/public/css/app.css
-index 7f74651..0513e44 100644
+index 7f74651..3989e16 100644
 --- a/public/css/app.css
 +++ b/public/css/app.css
-@@ -999,3 +999,152 @@ .padlock-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(1
+@@ -999,3 +999,154 @@ .padlock-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(1
  .padlock-steps figure { margin: 0; text-align: center; background: #fff; border: 1px solid #dde3e8; border-radius: 12px; padding: 10px; }
  .padlock-steps img { width: 100%; max-width: 160px; height: auto; }
  .padlock-steps figcaption { font-size: .9rem; color: #4a5a68; }
@@ -3061,6 +3061,8 @@ index 7f74651..0513e44 100644
 +.tr-bar i { display: block; height: 100%; background: var(--teal); }
 +.trip-card-top b { white-space: nowrap; }
 +.tm-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; }
++.trip-intake-grid input, .trip-intake-grid select { min-width: 0; }
++.trip-intake-grid .trip-repeat label { flex-direction: row; align-items: center; gap: 6px; }
 diff --git a/public/js/trips-board.js b/public/js/trips-board.js
 new file mode 100644
 index 0000000..1aa9e84
@@ -3797,7 +3799,7 @@ index 812e07d..0c58bf3 100644
                              @if ($u->hasPermission('forms'))<a href="{{ route('forms') }}" @class(['active' => request()->routeIs('forms', 'forms.show')])>Forms</a>@endif
 diff --git a/resources/views/trips/board.blade.php b/resources/views/trips/board.blade.php
 new file mode 100644
-index 0000000..ed1868b
+index 0000000..66a0012
 --- /dev/null
 +++ b/resources/views/trips/board.blade.php
 @@ -0,0 +1,150 @@
@@ -3897,7 +3899,7 @@ index 0000000..ed1868b
 +                        <label class="trip-check"><input type="radio" name="pickup_mode" value="scheduled"> Scheduled</label>
 +                        <label class="trip-check"><input type="radio" name="pickup_mode" value="will_call"> Will-call</label>
 +                    </div>
-+                    <label>Pickup time<input type="datetime-local" name="pickup_time" step="900"></label>
++                    <label class="trip-wide">Pickup time<input type="datetime-local" name="pickup_time" step="900"></label>
 +                    <label>Minutes the trip takes<input type="number" name="duration_min" value="60" min="15" max="600" step="15"></label>
 +                    <label class="trip-check trip-wide"><input type="checkbox" name="round_trip" value="1"> Round trip (books a return leg)</label>
 +                    <div class="trip-wide trip-return" hidden>
